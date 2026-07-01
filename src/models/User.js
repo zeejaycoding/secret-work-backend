@@ -30,6 +30,11 @@ const userSchema = new mongoose.Schema(
       default: "free",
     },
     subscriptionExpiry: { type: Date },
+    passwordResetCodeHash: { type: String },
+    passwordResetCodeExpiresAt: { type: Date },
+    passwordResetAttempts: { type: Number, default: 0 },
+    passwordResetTokenHash: { type: String },
+    passwordResetTokenExpiresAt: { type: Date },
   },
   { timestamps: true }
 );
