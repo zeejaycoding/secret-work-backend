@@ -12,6 +12,9 @@ const userRoutes = require("./routes/user");
 const app = express();
 const httpServer = createServer(app);
 
+// Render sits behind a reverse proxy, so trust the first proxy hop.
+app.set("trust proxy", 1);
+
 app.use(
   helmet({
     contentSecurityPolicy: false,
