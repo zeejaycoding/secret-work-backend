@@ -132,6 +132,10 @@ router.post("/forgot-password", async (req, res) => {
     } catch (emailError) {
       const details = emailError?.response?.body || emailError?.message || emailError;
       console.error("Failed to send reset verification code:", details);
+      res.status(502).json({
+        error: "Unable to send reset email right now",
+      });
+      return;
     }
 
     res.json({
