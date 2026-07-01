@@ -4,19 +4,16 @@ const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const { User } = require("../models/User");
 const { env } = require("../config/env");
-const { sendPasswordResetEmail } = require("../services/email");
+const {
+  sendPasswordResetEmail,
+  verifyPasswordResetEmailCode,
+} = require("../services/email");
 
 const router = Router();
-const RESET_CODE_TTL_MS = 10 * 60 * 1000;
 const RESET_TOKEN_TTL_MS = 15 * 60 * 1000;
-const MAX_RESET_ATTEMPTS = 5;
 
 function hashValue(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
-}
-
-function createOtpCode() {
-  return crypto.randomInt(100000, 1000000).toString();
 }
 
 function generateToken(user) {
@@ -117,18 +114,14 @@ router.post("/forgot-password", async (req, res) => {
       return;
     }
 
-    const otpCode = createOtpCode();
-    user.passwordResetCodeHash = hashValue(otpCode);
-    user.passwordResetCodeExpiresAt = new Date(Date.now() + RESET_CODE_TTL_MS);
-    user.passwordResetAttempts = 0;
     user.passwordResetTokenHash = undefined;
     user.passwordResetTokenExpiresAt = undefined;
     await user.save();
 
     try {
-      await sendPasswordResetEmail({ toEmail: user.email, otpCode });
+      await sendPasswordResetEmail({ toEmail: user.email });
     } catch (emailError) {
-      console.error("Failed to send reset email:", emailError.message);
+      console.error("Failed to send reset verification code:", emailError.message);
     }
 
     res.json({
@@ -151,32 +144,18 @@ router.post("/verify-reset-otp", async (req, res) => {
     }
 
     const normalizedEmail = email.trim().toLowerCase();
-    const sanitizedCode = code.trim();
-
     const user = await User.findOne({ email: normalizedEmail });
-    if (!user || !user.passwordResetCodeHash || !user.passwordResetCodeExpiresAt) {
+    if (!user) {
       res.status(400).json({ error: "Invalid or expired code" });
       return;
     }
 
-    if (user.passwordResetCodeExpiresAt.getTime() < Date.now()) {
-      res.status(400).json({ error: "Code expired. Please request a new one" });
-      return;
-    }
+    const approved = await verifyPasswordResetEmailCode({
+      toEmail: normalizedEmail,
+      code: code.trim(),
+    });
 
-    const codeHash = hashValue(sanitizedCode);
-    if (codeHash !== user.passwordResetCodeHash) {
-      user.passwordResetAttempts = (user.passwordResetAttempts || 0) + 1;
-
-      if (user.passwordResetAttempts >= MAX_RESET_ATTEMPTS) {
-        user.passwordResetCodeHash = undefined;
-        user.passwordResetCodeExpiresAt = undefined;
-        await user.save();
-        res.status(400).json({ error: "Too many attempts. Request a new code" });
-        return;
-      }
-
-      await user.save();
+    if (!approved) {
       res.status(400).json({ error: "Invalid code" });
       return;
     }
@@ -184,7 +163,6 @@ router.post("/verify-reset-otp", async (req, res) => {
     const resetToken = crypto.randomBytes(32).toString("hex");
     user.passwordResetTokenHash = hashValue(resetToken);
     user.passwordResetTokenExpiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MS);
-    user.passwordResetAttempts = 0;
     await user.save();
 
     res.json({
@@ -234,9 +212,6 @@ router.post("/reset-password", async (req, res) => {
     }
 
     user.password = await bcrypt.hash(newPassword, 10);
-    user.passwordResetCodeHash = undefined;
-    user.passwordResetCodeExpiresAt = undefined;
-    user.passwordResetAttempts = 0;
     user.passwordResetTokenHash = undefined;
     user.passwordResetTokenExpiresAt = undefined;
     await user.save();
