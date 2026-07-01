@@ -2,7 +2,7 @@ const nodemailer = require("nodemailer");
 const { env } = require("../config/env");
 
 function ensureSmtpConfigured() {
-  if (!env.emailFrom || !env.smtpHost || !env.smtpUser || !env.smtpPass) {
+  if (!env.smtpHost || !env.smtpUser || !env.smtpPass) {
     throw new Error("SMTP environment variables are missing");
   }
 }

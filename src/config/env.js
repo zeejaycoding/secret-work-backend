@@ -10,7 +10,7 @@ const env = {
   jwtSecret: process.env.JWT_SECRET || "fallback-secret-change-me",
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || "7d",
   frontendUrl: process.env.FRONTEND_URL || "http://localhost:8081",
-  emailFrom: process.env.EMAIL_FROM || "",
+  emailFrom: process.env.EMAIL_FROM || "no-reply@secret-work.local",
   mailtrapApiKey: process.env.MAILTRAP_API_KEY || "",
   smtpHost:
     process.env.SMTP_HOST ||
