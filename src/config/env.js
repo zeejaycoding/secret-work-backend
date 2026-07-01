@@ -10,9 +10,8 @@ const env = {
   jwtSecret: process.env.JWT_SECRET || "fallback-secret-change-me",
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || "7d",
   frontendUrl: process.env.FRONTEND_URL || "http://localhost:8081",
-  twilioAccountSid: process.env.TWILIO_ACCOUNT_SID || "",
-  twilioAuthToken: process.env.TWILIO_AUTH_TOKEN || "",
-  twilioVerifySid: process.env.TWILIO_VERIFY_SID || "",
+  sendgridApiKey: process.env.SENDGRID_API_KEY || "",
+  emailFrom: process.env.EMAIL_FROM || "",
 };
 
 module.exports = { env };
