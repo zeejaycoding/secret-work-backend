@@ -1,18 +1,26 @@
-const sgMail = require("@sendgrid/mail");
+const nodemailer = require("nodemailer");
 const { env } = require("../config/env");
 
-function ensureSendGridConfigured() {
-  if (!env.sendgridApiKey || !env.emailFrom) {
-    throw new Error("SendGrid environment variables are missing");
+function ensureSmtpConfigured() {
+  if (!env.emailFrom || !env.smtpHost || !env.smtpUser || !env.smtpPass) {
+    throw new Error("SMTP environment variables are missing");
   }
-
-  sgMail.setApiKey(env.sendgridApiKey);
 }
 
 async function sendPasswordResetEmail({ toEmail, otpCode }) {
-  ensureSendGridConfigured();
+  ensureSmtpConfigured();
 
-  const msg = {
+  const transporter = nodemailer.createTransport({
+    host: env.smtpHost,
+    port: env.smtpPort,
+    secure: env.smtpSecure,
+    auth: {
+      user: env.smtpUser,
+      pass: env.smtpPass,
+    },
+  });
+
+  const message = {
     to: toEmail,
     from: env.emailFrom,
     subject: "Your password reset code",
@@ -28,7 +36,7 @@ async function sendPasswordResetEmail({ toEmail, otpCode }) {
     `,
   };
 
-  await sgMail.send(msg);
+  await transporter.sendMail(message);
 }
 
 module.exports = { sendPasswordResetEmail };

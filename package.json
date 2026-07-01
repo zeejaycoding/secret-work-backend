@@ -7,7 +7,6 @@
     "start": "node src/index.js"
   },
   "dependencies": {
-    "@sendgrid/mail": "^8.1.6",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
@@ -16,6 +15,7 @@
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.9.5",
+    "nodemailer": "^6.10.0",
     "socket.io": "^4.8.1"
   }
 }

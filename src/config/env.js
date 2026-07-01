@@ -10,8 +10,14 @@ const env = {
   jwtSecret: process.env.JWT_SECRET || "fallback-secret-change-me",
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || "7d",
   frontendUrl: process.env.FRONTEND_URL || "http://localhost:8081",
-  sendgridApiKey: process.env.SENDGRID_API_KEY || "",
   emailFrom: process.env.EMAIL_FROM || "",
+  smtpHost: process.env.SMTP_HOST || process.env.MAILTRAP_SMTP_HOST || "",
+  smtpPort: parseInt(process.env.SMTP_PORT || process.env.MAILTRAP_SMTP_PORT || "587", 10),
+  smtpUser: process.env.SMTP_USER || process.env.MAILTRAP_SMTP_USER || "",
+  smtpPass: process.env.SMTP_PASS || process.env.MAILTRAP_SMTP_PASS || process.env.MAILTRAP_API_KEY || "",
+  smtpSecure:
+    String(process.env.SMTP_SECURE || process.env.MAILTRAP_SMTP_SECURE || "false").toLowerCase() ===
+    "true",
 };
 
 module.exports = { env };
