@@ -10,13 +10,21 @@ function ensureEmailConfigured() {
 async function sendPasswordResetEmail({ toEmail, otpCode }) {
   ensureEmailConfigured();
 
+  console.log("EMAIL_USER:", env.emailUser);
+console.log("EMAIL_PASS exists:", !!env.emailPass);
+
   const transporter = nodemailer.createTransport({
-    service: "gmail",
-    auth: {
-      user: env.emailUser,
-      pass: env.emailPass,
-    },
-  });
+  host: "smtp.gmail.com",
+  port: 465,
+  secure: true,
+  auth: {
+    user: env.emailUser,
+    pass: env.emailPass,
+  },
+  tls: {
+    rejectUnauthorized: false,
+  },
+});
 
   const message = {
     to: toEmail,
