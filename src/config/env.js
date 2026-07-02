@@ -10,25 +10,8 @@ const env = {
   jwtSecret: process.env.JWT_SECRET || "fallback-secret-change-me",
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || "7d",
   frontendUrl: process.env.FRONTEND_URL || "http://localhost:8081",
-  emailFrom: process.env.EMAIL_FROM || "no-reply@secret-work.local",
-  mailtrapApiKey: process.env.MAILTRAP_API_KEY || "",
-  smtpHost:
-    process.env.SMTP_HOST ||
-    process.env.MAILTRAP_SMTP_HOST ||
-    (process.env.MAILTRAP_API_KEY ? "live.smtp.mailtrap.io" : ""),
-  smtpPort: parseInt(process.env.SMTP_PORT || process.env.MAILTRAP_SMTP_PORT || "587", 10),
-  smtpUser:
-    process.env.SMTP_USER ||
-    process.env.MAILTRAP_SMTP_USER ||
-    (process.env.MAILTRAP_API_KEY ? "api" : ""),
-  smtpPass:
-    process.env.SMTP_PASS ||
-    process.env.MAILTRAP_SMTP_PASS ||
-    process.env.MAILTRAP_API_KEY ||
-    "",
-  smtpSecure:
-    String(process.env.SMTP_SECURE || process.env.MAILTRAP_SMTP_SECURE || "false").toLowerCase() ===
-    "true",
+  emailUser: process.env.EMAIL_USER || "",
+  emailPass: process.env.EMAIL_PASS || "",
 };
 
 module.exports = { env };

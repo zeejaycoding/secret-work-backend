@@ -1,28 +1,26 @@
 const nodemailer = require("nodemailer");
 const { env } = require("../config/env");
 
-function ensureSmtpConfigured() {
-  if (!env.smtpHost || !env.smtpUser || !env.smtpPass) {
-    throw new Error("SMTP environment variables are missing");
+function ensureEmailConfigured() {
+  if (!env.emailUser || !env.emailPass) {
+    throw new Error("EMAIL_USER or EMAIL_PASS is missing");
   }
 }
 
 async function sendPasswordResetEmail({ toEmail, otpCode }) {
-  ensureSmtpConfigured();
+  ensureEmailConfigured();
 
   const transporter = nodemailer.createTransport({
-    host: env.smtpHost,
-    port: env.smtpPort,
-    secure: env.smtpSecure,
+    service: "gmail",
     auth: {
-      user: env.smtpUser,
-      pass: env.smtpPass,
+      user: env.emailUser,
+      pass: env.emailPass,
     },
   });
 
   const message = {
     to: toEmail,
-    from: env.emailFrom,
+    from: env.emailUser,
     subject: "Your password reset code",
     text: `Your password reset code is ${otpCode}. This code expires in 10 minutes.`,
     html: `
