@@ -12,6 +12,8 @@ const env = {
   frontendUrl: process.env.FRONTEND_URL || "http://localhost:8081",
   emailUser: process.env.EMAIL_USER || "",
   emailPass: process.env.EMAIL_PASS || "",
+  sendgridApiKey: process.env.GRID_API_KEY || "",
+  emailFrom: process.env.EMAIL_USER || "noreply@secretwork.com",
 };
 
 module.exports = { env };

@@ -1,34 +1,19 @@
-const nodemailer = require("nodemailer");
+const sgMail = require("@sendgrid/mail");
 const { env } = require("../config/env");
 
 function ensureEmailConfigured() {
-  if (!env.emailUser || !env.emailPass) {
-    throw new Error("EMAIL_USER or EMAIL_PASS is missing");
+  if (!env.sendgridApiKey) {
+    throw new Error("GRID_API_KEY is missing");
   }
+  sgMail.setApiKey(env.sendgridApiKey);
 }
 
 async function sendPasswordResetEmail({ toEmail, otpCode }) {
   ensureEmailConfigured();
 
-  console.log("EMAIL_USER:", env.emailUser);
-console.log("EMAIL_PASS exists:", !!env.emailPass);
-
-  const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 465,
-  secure: true,
-  auth: {
-    user: env.emailUser,
-    pass: env.emailPass,
-  },
-  tls: {
-    rejectUnauthorized: false,
-  },
-});
-
-  const message = {
+  const msg = {
     to: toEmail,
-    from: env.emailUser,
+    from: env.emailFrom,
     subject: "Your password reset code",
     text: `Your password reset code is ${otpCode}. This code expires in 10 minutes.`,
     html: `
@@ -42,7 +27,7 @@ console.log("EMAIL_PASS exists:", !!env.emailPass);
     `,
   };
 
-  await transporter.sendMail(message);
+  await sgMail.send(msg);
 }
 
 module.exports = { sendPasswordResetEmail };
