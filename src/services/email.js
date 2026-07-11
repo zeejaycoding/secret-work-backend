@@ -27,7 +27,13 @@ async function sendPasswordResetEmail({ toEmail, otpCode }) {
     `,
   };
 
-  await sgMail.send(msg);
+  try {
+    await sgMail.send(msg);
+  } catch (err) {
+    const sgError = err?.response?.body?.errors?.[0]?.message || err.message || err;
+    console.error("SendGrid error:", sgError);
+    throw new Error(`Email send failed: ${sgError}`);
+  }
 }
 
 module.exports = { sendPasswordResetEmail };

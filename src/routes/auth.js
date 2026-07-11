@@ -130,10 +130,9 @@ router.post("/forgot-password", async (req, res) => {
     try {
       await sendPasswordResetEmail({ toEmail: user.email, otpCode });
     } catch (emailError) {
-      const details = emailError?.response?.body || emailError?.message || emailError;
-      console.error("Failed to send reset verification code:", details);
+      console.error("Failed to send reset email:", emailError.message || emailError);
       res.status(502).json({
-        error: "Unable to send reset email right now",
+        error: "Unable to send reset email. The sender email may not be verified in SendGrid.",
       });
       return;
     }

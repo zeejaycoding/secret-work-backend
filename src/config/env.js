@@ -13,7 +13,7 @@ const env = {
   emailUser: process.env.EMAIL_USER || "",
   emailPass: process.env.EMAIL_PASS || "",
   sendgridApiKey: process.env.GRID_API_KEY || "",
-  emailFrom: process.env.EMAIL_USER || "noreply@secretwork.com",
+  emailFrom: process.env.EMAIL_USER || "Darrylfinland@gmail.com",
 };
 
 module.exports = { env };
