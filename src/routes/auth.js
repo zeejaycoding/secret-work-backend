@@ -18,7 +18,7 @@ function hashValue(value) {
 }
 
 function createOtpCode() {
-  return crypto.randomInt(100000, 1000000).toString();
+  return crypto.randomInt(10000, 100000).toString();
 }
 
 function generateToken(user) {
