@@ -14,6 +14,8 @@ const env = {
   emailPass: process.env.EMAIL_PASS || "",
   sendgridApiKey: process.env.GRID_API_KEY || "",
   emailFrom: process.env.EMAIL_USER || "Darrylfinland@gmail.com",
+  stripeSecretKey: process.env.STRIPE_SECRET_KEY || "",
+  stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET || "",
 };
 
 module.exports = { env };

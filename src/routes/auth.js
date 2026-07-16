@@ -254,4 +254,46 @@ router.post("/reset-password", async (req, res) => {
   }
 });
 
+router.post("/social-login", async (req, res) => {
+  try {
+    const { email, firstName, lastName, avatarUrl, provider } = req.body;
+
+    if (!email || !email.trim()) {
+      res.status(400).json({ error: "Email is required" });
+      return;
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    const validProviders = ["google", "facebook", "apple"];
+    const authProvider = validProviders.includes(provider) ? provider : "google";
+
+    let user = await User.findOne({ email: normalizedEmail });
+
+    if (user) {
+      if (!user.firstName && firstName) user.firstName = firstName;
+      if (!user.lastName && lastName) user.lastName = lastName;
+      if (!user.avatarUrl && avatarUrl) user.avatarUrl = avatarUrl;
+      if (user.authProvider === "local") user.authProvider = authProvider;
+      await user.save();
+    } else {
+      user = await User.create({
+        email: normalizedEmail,
+        firstName: firstName || "",
+        lastName: lastName || "",
+        avatarUrl: avatarUrl || "",
+        authProvider,
+        onboarded: false,
+      });
+    }
+
+    const token = generateToken(user);
+
+    console.log(`Social login (${authProvider}): ${user.email}`);
+    res.json({ token, user });
+  } catch (error) {
+    console.error("Social login error:", error);
+    res.status(500).json({ error: "Social login failed" });
+  }
+});
+
 module.exports = router;

@@ -8,6 +8,7 @@ const { connectDB } = require("./config/db");
 const { initSocket } = require("./socket");
 const authRoutes = require("./routes/auth");
 const userRoutes = require("./routes/user");
+const { checkoutRouter, webhookRouter } = require("./routes/payments");
 
 const app = express();
 const httpServer = createServer(app);
@@ -36,6 +37,9 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
+// Webhook needs raw body BEFORE express.json()
+app.use("/api/webhooks", webhookRouter);
+
 app.use(express.json());
 
 app.get("/api/health", (_req, res) => {
@@ -48,6 +52,7 @@ app.get("/api/health", (_req, res) => {
 
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
+app.use("/api/payments", checkoutRouter);
 
 app.use((_req, res) => {
   res.status(404).json({ error: "Route not found" });
