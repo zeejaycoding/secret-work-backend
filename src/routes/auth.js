@@ -2,6 +2,7 @@ const { Router } = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
+const { verifyToken } = require("@clerk/backend");
 const { User } = require("../models/User");
 const { env } = require("../config/env");
 const {
@@ -256,30 +257,54 @@ router.post("/reset-password", async (req, res) => {
 
 router.post("/social-login", async (req, res) => {
   try {
-    const { email, firstName, lastName, avatarUrl, provider } = req.body;
+    const { clerkToken, email, firstName, lastName, avatarUrl, provider } = req.body;
 
-    if (!email || !email.trim()) {
+    if (!clerkToken) {
+      res.status(400).json({ error: "Clerk session token is required" });
+      return;
+    }
+
+    let verifiedEmail = email;
+    let verifiedFirstName = firstName;
+    let verifiedLastName = lastName;
+
+    if (env.clerkSecretKey) {
+      try {
+        const verified = await verifyToken(clerkToken, {
+          secretKey: env.clerkSecretKey,
+        });
+        verifiedEmail = verified.email || email;
+        verifiedFirstName = verified.given_name || firstName;
+        verifiedLastName = verified.family_name || lastName;
+      } catch (tokenErr) {
+        console.error("Clerk token verification failed:", tokenErr.message);
+        res.status(401).json({ error: "Invalid social login token" });
+        return;
+      }
+    }
+
+    if (!verifiedEmail || !verifiedEmail.trim()) {
       res.status(400).json({ error: "Email is required" });
       return;
     }
 
-    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedEmail = verifiedEmail.trim().toLowerCase();
     const validProviders = ["google", "facebook", "apple"];
     const authProvider = validProviders.includes(provider) ? provider : "google";
 
     let user = await User.findOne({ email: normalizedEmail });
 
     if (user) {
-      if (!user.firstName && firstName) user.firstName = firstName;
-      if (!user.lastName && lastName) user.lastName = lastName;
+      if (!user.firstName && verifiedFirstName) user.firstName = verifiedFirstName;
+      if (!user.lastName && verifiedLastName) user.lastName = verifiedLastName;
       if (!user.avatarUrl && avatarUrl) user.avatarUrl = avatarUrl;
       if (user.authProvider === "local") user.authProvider = authProvider;
       await user.save();
     } else {
       user = await User.create({
         email: normalizedEmail,
-        firstName: firstName || "",
-        lastName: lastName || "",
+        firstName: verifiedFirstName || "",
+        lastName: verifiedLastName || "",
         avatarUrl: avatarUrl || "",
         authProvider,
         onboarded: false,
