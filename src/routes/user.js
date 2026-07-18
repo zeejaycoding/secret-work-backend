@@ -131,4 +131,47 @@ router.post("/password", async (req, res) => {
   }
 });
 
+router.post("/password/change", async (req, res) => {
+  try {
+    const { oldPassword, newPassword } = req.body;
+
+    if (!oldPassword || !newPassword) {
+      res.status(400).json({ error: "Old password and new password are required" });
+      return;
+    }
+
+    if (newPassword.length < 8) {
+      res.status(400).json({ error: "New password must be at least 8 characters" });
+      return;
+    }
+
+    const user = await User.findById(req.auth.userId);
+
+    if (!user) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    if (!user.password) {
+      res.status(400).json({ error: "No password set. Use 'Forgot Password' to set one." });
+      return;
+    }
+
+    const valid = await bcrypt.compare(oldPassword, user.password);
+    if (!valid) {
+      res.status(401).json({ error: "Current password is incorrect" });
+      return;
+    }
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
+
+    console.log(`Password changed for user: ${user.email}`);
+    res.json({ success: true, message: "Password changed successfully" });
+  } catch (error) {
+    console.error("Change password error:", error);
+    res.status(500).json({ error: "Failed to change password" });
+  }
+});
+
 module.exports = router;
