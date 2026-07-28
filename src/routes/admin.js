@@ -63,6 +63,24 @@ router.post("/reset-password", async (req, res) => {
     env.adminPassword = newPassword;
     res.json({ success: true, message: "Admin password updated" });
   } catch (error) {
+    console.error("Password reset failed:", error);
+    res.status(500).json({ error: "Password reset failed" });
+  }
+});
+
+// ── Admin Forgot Password Reset (no current password required) ──
+router.post("/forgot-password-reset", async (req, res) => {
+  try {
+    const { newPassword } = req.body;
+
+    if (!newPassword || newPassword.length < 8) {
+      return res.status(400).json({ error: "New password must be at least 8 characters" });
+    }
+
+    env.adminPassword = newPassword;
+    res.json({ success: true, message: "Admin password updated" });
+  } catch (error) {
+    console.error("Forgot password reset error:", error);
     res.status(500).json({ error: "Password reset failed" });
   }
 });
