@@ -17,6 +17,9 @@ const env = {
   stripeSecretKey: process.env.STRIPE_SECRET_KEY || "",
   stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET || "",
   clerkSecretKey: process.env.CLERK_SECRET_KEY || "",
+  adminEmail: process.env.ADMIN_EMAIL || "zahabjahangir12@gmail.com",
+  adminPassword: process.env.ADMIN_PASSWORD || "Admin123",
+  adminJwtSecret: process.env.ADMIN_JWT_SECRET || "admin-secret-key-change-in-prod",
 };
 
 module.exports = { env };

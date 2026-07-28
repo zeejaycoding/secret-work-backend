@@ -61,8 +61,8 @@ checkoutRouter.post("/checkout", authMiddleware, async (req, res) => {
           quantity: 1,
         },
       ],
-      success_url: `${env.frontendUrl.split(",")[0]}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${env.frontendUrl.split(",")[0]}/payment-cancel`,
+      success_url: `${env.frontendUrl.split(",").pop()}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${env.frontendUrl.split(",").pop()}/payment-cancel`,
       metadata: { userId: user._id.toString(), plan },
     });
 
