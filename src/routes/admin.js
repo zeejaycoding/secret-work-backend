@@ -320,7 +320,21 @@ router.get("/programs", adminAuth, async (req, res) => {
     if (category && category !== "all") {
       filter.category = category;
     }
-    const programs = await Program.find(filter)
+    let programs = await Program.find(filter)
+      .populate("drills.drill")
+      .sort({ createdAt: -1 });
+    // Backfill programs that have a category but no drills
+    for (const p of programs) {
+      if (p.category && (!p.drills || p.drills.length === 0)) {
+        const matchingDrills = await Drill.find({ category: p.category }).sort({ createdAt: 1 });
+        if (matchingDrills.length > 0) {
+          p.drills = matchingDrills.map((d, i) => ({ drill: d._id, order: i + 1 }));
+          await p.save();
+        }
+      }
+    }
+    // Refetch with populated drills after backfill
+    programs = await Program.find(filter)
       .populate("drills.drill")
       .sort({ createdAt: -1 });
     res.json({ programs });
@@ -349,13 +363,21 @@ router.post("/programs", adminAuth, async (req, res) => {
     if (!name || !name.trim()) {
       return res.status(400).json({ error: "Program name is required" });
     }
+    const cat = category || "";
+    let drills = [];
+    if (cat) {
+      const matchingDrills = await Drill.find({ category: cat }).sort({ createdAt: 1 });
+      drills = matchingDrills.map((d, i) => ({ drill: d._id, order: i + 1 }));
+    }
     const program = await Program.create({
       name: name.trim(),
       level: level || "Beginner",
-      category: category || "",
+      category: cat,
       duration: duration || "4 weeks",
+      drills,
     });
-    res.status(201).json({ program });
+    const populated = await Program.findById(program._id).populate("drills.drill");
+    res.status(201).json({ program: populated });
   } catch (error) {
     console.error("Create program error:", error);
     res.status(500).json({ error: "Failed to create program" });
