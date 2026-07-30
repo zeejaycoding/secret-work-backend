@@ -1,6 +1,6 @@
 /**
  * Seed script — run with: node scripts/seed.js
- * Creates sample drills in MongoDB for admin panel demo
+ * Creates categories, sample drills, and programs in MongoDB
  */
 
 const mongoose = require("mongoose");
@@ -8,31 +8,17 @@ require("dotenv").config({ path: __dirname + "/../.env" });
 
 const MONGO_URI = process.env.MONGO_URI || "mongodb://localhost:27017/secretwork";
 
-const DrillSchema = new mongoose.Schema(
-  {
-    title: String,
-    description: String,
-    coach: String,
-    category: { type: String, enum: ["Dribbling", "Shooting", "Defence", "Passing", "Fitness"] },
-    status: { type: String, enum: ["draft", "published"], default: "published" },
-    imageUrl: { type: String, default: "" },
-    duration: { type: Number, default: 0 },
-    views: { type: Number, default: 0 },
-    likes: { type: Number, default: 0 },
-    completionRate: { type: Number, default: 0 },
-    avgWatchTime: { type: Number, default: 0 },
-    viewsHistory: [
-      {
-        month: Number,
-        year: Number,
-        views: Number,
-      },
-    ],
-  },
-  { timestamps: true }
-);
+const Drill = require("../src/models/Drill");
+const Category = require("../src/models/Category");
+const Program = require("../src/models/Program");
 
-const Drill = mongoose.model("Drill", DrillSchema);
+const CATEGORIES = [
+  { name: "Dribbling", description: "Ball handling and dribbling drills" },
+  { name: "Shooting", description: "Shooting mechanics and accuracy drills" },
+  { name: "Defence", description: "Defensive positioning and footwork drills" },
+  { name: "Passing", description: "Passing accuracy and vision drills" },
+  { name: "Fitness", description: "Conditioning and agility drills" },
+];
 
 const SAMPLE_DRILLS = [
   {
@@ -42,16 +28,16 @@ const SAMPLE_DRILLS = [
     category: "Dribbling",
     status: "published",
     imageUrl: "",
-    duration: 12,
+    duration: "12 min",
     views: 15420,
     likes: 1280,
     completionRate: 88,
-    avgWatchTime: 340,
+    avgWatchTime: "5m 40s",
     viewsHistory: [
-      { month: 1, year: 2026, views: 2100 },
-      { month: 2, year: 2026, views: 3400 },
-      { month: 3, year: 2026, views: 4200 },
-      { month: 4, year: 2026, views: 5720 },
+      { date: new Date("2026-01-15"), count: 2100 },
+      { date: new Date("2026-02-15"), count: 3400 },
+      { date: new Date("2026-03-15"), count: 4200 },
+      { date: new Date("2026-04-15"), count: 5720 },
     ],
   },
   {
@@ -61,16 +47,16 @@ const SAMPLE_DRILLS = [
     category: "Shooting",
     status: "published",
     imageUrl: "",
-    duration: 15,
+    duration: "15 min",
     views: 23100,
     likes: 2150,
     completionRate: 92,
-    avgWatchTime: 420,
+    avgWatchTime: "7m 0s",
     viewsHistory: [
-      { month: 1, year: 2026, views: 4500 },
-      { month: 2, year: 2026, views: 6200 },
-      { month: 3, year: 2026, views: 7100 },
-      { month: 4, year: 2026, views: 5300 },
+      { date: new Date("2026-01-15"), count: 4500 },
+      { date: new Date("2026-02-15"), count: 6200 },
+      { date: new Date("2026-03-15"), count: 7100 },
+      { date: new Date("2026-04-15"), count: 5300 },
     ],
   },
   {
@@ -80,16 +66,16 @@ const SAMPLE_DRILLS = [
     category: "Defence",
     status: "published",
     imageUrl: "",
-    duration: 10,
+    duration: "10 min",
     views: 8900,
     likes: 720,
     completionRate: 75,
-    avgWatchTime: 280,
+    avgWatchTime: "4m 40s",
     viewsHistory: [
-      { month: 1, year: 2026, views: 1200 },
-      { month: 2, year: 2026, views: 2100 },
-      { month: 3, year: 2026, views: 2800 },
-      { month: 4, year: 2026, views: 2800 },
+      { date: new Date("2026-01-15"), count: 1200 },
+      { date: new Date("2026-02-15"), count: 2100 },
+      { date: new Date("2026-03-15"), count: 2800 },
+      { date: new Date("2026-04-15"), count: 2800 },
     ],
   },
   {
@@ -99,16 +85,16 @@ const SAMPLE_DRILLS = [
     category: "Passing",
     status: "published",
     imageUrl: "",
-    duration: 8,
+    duration: "8 min",
     views: 6200,
     likes: 580,
     completionRate: 85,
-    avgWatchTime: 220,
+    avgWatchTime: "3m 40s",
     viewsHistory: [
-      { month: 1, year: 2026, views: 800 },
-      { month: 2, year: 2026, views: 1400 },
-      { month: 3, year: 2026, views: 1900 },
-      { month: 4, year: 2026, views: 2100 },
+      { date: new Date("2026-01-15"), count: 800 },
+      { date: new Date("2026-02-15"), count: 1400 },
+      { date: new Date("2026-03-15"), count: 1900 },
+      { date: new Date("2026-04-15"), count: 2100 },
     ],
   },
   {
@@ -118,16 +104,16 @@ const SAMPLE_DRILLS = [
     category: "Fitness",
     status: "published",
     imageUrl: "",
-    duration: 20,
+    duration: "20 min",
     views: 11300,
     likes: 890,
     completionRate: 62,
-    avgWatchTime: 500,
+    avgWatchTime: "8m 20s",
     viewsHistory: [
-      { month: 1, year: 2026, views: 1800 },
-      { month: 2, year: 2026, views: 2900 },
-      { month: 3, year: 2026, views: 3200 },
-      { month: 4, year: 2026, views: 3400 },
+      { date: new Date("2026-01-15"), count: 1800 },
+      { date: new Date("2026-02-15"), count: 2900 },
+      { date: new Date("2026-03-15"), count: 3200 },
+      { date: new Date("2026-04-15"), count: 3400 },
     ],
   },
   {
@@ -137,14 +123,14 @@ const SAMPLE_DRILLS = [
     category: "Dribbling",
     status: "draft",
     imageUrl: "",
-    duration: 14,
+    duration: "14 min",
     views: 3200,
     likes: 410,
     completionRate: 70,
-    avgWatchTime: 310,
+    avgWatchTime: "5m 10s",
     viewsHistory: [
-      { month: 3, year: 2026, views: 1500 },
-      { month: 4, year: 2026, views: 1700 },
+      { date: new Date("2026-03-15"), count: 1500 },
+      { date: new Date("2026-04-15"), count: 1700 },
     ],
   },
   {
@@ -154,16 +140,16 @@ const SAMPLE_DRILLS = [
     category: "Shooting",
     status: "published",
     imageUrl: "",
-    duration: 12,
+    duration: "12 min",
     views: 19800,
     likes: 1840,
     completionRate: 90,
-    avgWatchTime: 380,
+    avgWatchTime: "6m 20s",
     viewsHistory: [
-      { month: 1, year: 2026, views: 3200 },
-      { month: 2, year: 2026, views: 5100 },
-      { month: 3, year: 2026, views: 6200 },
-      { month: 4, year: 2026, views: 5300 },
+      { date: new Date("2026-01-15"), count: 3200 },
+      { date: new Date("2026-02-15"), count: 5100 },
+      { date: new Date("2026-03-15"), count: 6200 },
+      { date: new Date("2026-04-15"), count: 5300 },
     ],
   },
   {
@@ -173,15 +159,15 @@ const SAMPLE_DRILLS = [
     category: "Defence",
     status: "published",
     imageUrl: "",
-    duration: 10,
+    duration: "10 min",
     views: 5400,
     likes: 420,
     completionRate: 80,
-    avgWatchTime: 260,
+    avgWatchTime: "4m 20s",
     viewsHistory: [
-      { month: 2, year: 2026, views: 1200 },
-      { month: 3, year: 2026, views: 1800 },
-      { month: 4, year: 2026, views: 2400 },
+      { date: new Date("2026-02-15"), count: 1200 },
+      { date: new Date("2026-03-15"), count: 1800 },
+      { date: new Date("2026-04-15"), count: 2400 },
     ],
   },
 ];
@@ -191,12 +177,63 @@ async function seed() {
     await mongoose.connect(MONGO_URI);
     console.log("Connected to MongoDB");
 
-    const count = await Drill.countDocuments();
-    if (count > 0) {
-      console.log(`Database already has ${count} drills. Skipping seed.`);
+    // Seed categories
+    const catCount = await Category.countDocuments();
+    if (catCount === 0) {
+      await Category.insertMany(CATEGORIES);
+      console.log(`Seeded ${CATEGORIES.length} categories.`);
     } else {
-      await Drill.insertMany(SAMPLE_DRILLS);
-      console.log(`Seeded ${SAMPLE_DRILLS.length} drills successfully.`);
+      console.log(`Categories already seeded (${catCount}).`);
+    }
+
+    // Seed drills
+    const drillCount = await Drill.countDocuments();
+    let drills;
+    if (drillCount === 0) {
+      drills = await Drill.insertMany(SAMPLE_DRILLS);
+      console.log(`Seeded ${drills.length} drills.`);
+    } else {
+      drills = await Drill.find();
+      console.log(`Drills already seeded (${drillCount}).`);
+    }
+
+    // Seed programs with drill references
+    const progCount = await Program.countDocuments();
+    if (progCount === 0 && drills.length > 0) {
+      const dribblingDrills = drills.filter((d) => d.category === "Dribbling").map((d, i) => ({ drill: d._id, order: i + 1 }));
+      const shootingDrills = drills.filter((d) => d.category === "Shooting").map((d, i) => ({ drill: d._id, order: i + 1 }));
+
+      await Program.insertMany([
+        {
+          name: "Elite Guard Package",
+          description: "A comprehensive program designed for elite-level guards. Focuses on ball handling, shot creation, and basketball IQ development.",
+          level: "Advanced",
+          category: "Dribbling",
+          duration: "12 weeks",
+          status: "published",
+          drills: dribblingDrills,
+          enrolled: 421,
+          completionRate: 87,
+          reviews: 4.5,
+          views: 4800,
+        },
+        {
+          name: "Sharpshooter Program",
+          description: "Develop consistent shooting mechanics and game-ready range through progressive drill sequences.",
+          level: "Intermediate",
+          category: "Shooting",
+          duration: "8 weeks",
+          status: "published",
+          drills: shootingDrills,
+          enrolled: 315,
+          completionRate: 82,
+          reviews: 4.3,
+          views: 3600,
+        },
+      ]);
+      console.log("Seeded 2 programs.");
+    } else {
+      console.log(`Programs already seeded (${progCount}).`);
     }
 
     await mongoose.disconnect();

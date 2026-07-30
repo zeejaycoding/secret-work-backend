@@ -1,0 +1,34 @@
+const mongoose = require("mongoose");
+
+const programSchema = new mongoose.Schema(
+  {
+    name: { type: String, required: true, trim: true },
+    description: { type: String, default: "" },
+    level: {
+      type: String,
+      enum: ["Beginner", "Intermediate", "Advanced"],
+      default: "Beginner",
+    },
+    category: { type: String, default: "" },
+    duration: { type: String, default: "4 weeks" },
+    status: {
+      type: String,
+      enum: ["published", "draft", "archived"],
+      default: "draft",
+    },
+    drills: [
+      {
+        drill: { type: mongoose.Schema.Types.ObjectId, ref: "Drill" },
+        order: { type: Number },
+      },
+    ],
+    imageUrl: { type: String, default: "" },
+    enrolled: { type: Number, default: 0 },
+    completionRate: { type: Number, default: 0 },
+    reviews: { type: Number, default: 0 },
+    views: { type: Number, default: 0 },
+  },
+  { timestamps: true }
+);
+
+module.exports = mongoose.model("Program", programSchema);

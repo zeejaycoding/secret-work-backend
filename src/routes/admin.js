@@ -5,6 +5,8 @@ const { env } = require("../config/env");
 const { adminAuth } = require("../middleware/adminAuth");
 const { User } = require("../models/User");
 const Drill = require("../models/Drill");
+const Category = require("../models/Category");
+const Program = require("../models/Program");
 
 const router = Router();
 
@@ -249,6 +251,138 @@ router.get("/users", adminAuth, async (req, res) => {
   } catch (error) {
     console.error("List users error:", error);
     res.status(500).json({ error: "Failed to fetch users" });
+  }
+});
+
+// ── Categories: List ──
+router.get("/categories", adminAuth, async (req, res) => {
+  try {
+    const categories = await Category.find().sort({ name: 1 });
+    const drillCounts = await Drill.aggregate([
+      { $group: { _id: "$category", count: { $sum: 1 } } },
+    ]);
+    const countMap = {};
+    drillCounts.forEach((d) => { countMap[d._id] = d.count; });
+    const result = categories.map((c) => ({
+      _id: c._id,
+      name: c.name,
+      description: c.description,
+      drillCount: countMap[c.name] || 0,
+    }));
+    res.json({ categories: result });
+  } catch (error) {
+    console.error("List categories error:", error);
+    res.status(500).json({ error: "Failed to fetch categories" });
+  }
+});
+
+// ── Categories: Create ──
+router.post("/categories", adminAuth, async (req, res) => {
+  try {
+    const { name, description } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: "Category name is required" });
+    }
+    const existing = await Category.findOne({ name: name.trim() });
+    if (existing) {
+      return res.status(409).json({ error: "Category already exists" });
+    }
+    const category = await Category.create({ name: name.trim(), description });
+    res.status(201).json({ category });
+  } catch (error) {
+    console.error("Create category error:", error);
+    res.status(500).json({ error: "Failed to create category" });
+  }
+});
+
+// ── Categories: Delete ──
+router.delete("/categories/:id", adminAuth, async (req, res) => {
+  try {
+    const category = await Category.findByIdAndDelete(req.params.id);
+    if (!category) return res.status(404).json({ error: "Category not found" });
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Delete category error:", error);
+    res.status(500).json({ error: "Failed to delete category" });
+  }
+});
+
+// ── Programs: List ──
+router.get("/programs", adminAuth, async (req, res) => {
+  try {
+    const { search, category } = req.query;
+    const filter = {};
+    if (search) {
+      filter.$or = [
+        { name: { $regex: search, $options: "i" } },
+      ];
+    }
+    if (category && category !== "all") {
+      filter.category = category;
+    }
+    const programs = await Program.find(filter)
+      .populate("drills.drill")
+      .sort({ createdAt: -1 });
+    res.json({ programs });
+  } catch (error) {
+    console.error("List programs error:", error);
+    res.status(500).json({ error: "Failed to fetch programs" });
+  }
+});
+
+// ── Programs: Get Single ──
+router.get("/programs/:id", adminAuth, async (req, res) => {
+  try {
+    const program = await Program.findById(req.params.id).populate("drills.drill");
+    if (!program) return res.status(404).json({ error: "Program not found" });
+    res.json({ program });
+  } catch (error) {
+    console.error("Get program error:", error);
+    res.status(500).json({ error: "Failed to fetch program" });
+  }
+});
+
+// ── Programs: Create ──
+router.post("/programs", adminAuth, async (req, res) => {
+  try {
+    const { name, level, category, duration } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: "Program name is required" });
+    }
+    const program = await Program.create({
+      name: name.trim(),
+      level: level || "Beginner",
+      category: category || "",
+      duration: duration || "4 weeks",
+    });
+    res.status(201).json({ program });
+  } catch (error) {
+    console.error("Create program error:", error);
+    res.status(500).json({ error: "Failed to create program" });
+  }
+});
+
+// ── Programs: Update ──
+router.put("/programs/:id", adminAuth, async (req, res) => {
+  try {
+    const program = await Program.findByIdAndUpdate(req.params.id, req.body, { new: true }).populate("drills.drill");
+    if (!program) return res.status(404).json({ error: "Program not found" });
+    res.json({ program });
+  } catch (error) {
+    console.error("Update program error:", error);
+    res.status(500).json({ error: "Failed to update program" });
+  }
+});
+
+// ── Programs: Delete ──
+router.delete("/programs/:id", adminAuth, async (req, res) => {
+  try {
+    const program = await Program.findByIdAndDelete(req.params.id);
+    if (!program) return res.status(404).json({ error: "Program not found" });
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Delete program error:", error);
+    res.status(500).json({ error: "Failed to delete program" });
   }
 });
 
