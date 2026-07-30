@@ -326,7 +326,7 @@ router.get("/programs", adminAuth, async (req, res) => {
     // Backfill programs that have a category but no drills
     for (const p of programs) {
       if (p.category && (!p.drills || p.drills.length === 0)) {
-        const matchingDrills = await Drill.find({ category: p.category }).sort({ createdAt: 1 });
+        const matchingDrills = await Drill.find({ category: { $regex: `^${p.category}$`, $options: "i" } }).sort({ createdAt: 1 });
         if (matchingDrills.length > 0) {
           p.drills = matchingDrills.map((d, i) => ({ drill: d._id, order: i + 1 }));
           await p.save();
