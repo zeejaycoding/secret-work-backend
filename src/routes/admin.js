@@ -193,6 +193,14 @@ router.post("/drills", adminAuth, upload.fields([
 ]), async (req, res) => {
   try {
     const data = { ...req.body };
+    const title = (data.title || "").trim();
+    if (!title) {
+      return res.status(400).json({ error: "Drill title is required" });
+    }
+    const existing = await Drill.findOne({ title: { $regex: `^${title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" } });
+    if (existing) {
+      return res.status(409).json({ error: "A drill with this title already exists" });
+    }
     const baseUrl = `${req.protocol}://${req.get("host")}`;
     if (req.files?.thumbnail?.[0]) {
       data.imageUrl = `${baseUrl}/uploads/thumbnails/${req.files.thumbnail[0].filename}`;
