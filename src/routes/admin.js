@@ -3,6 +3,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { env } = require("../config/env");
 const { adminAuth } = require("../middleware/adminAuth");
+const { upload } = require("../middleware/upload");
 const { User } = require("../models/User");
 const Drill = require("../models/Drill");
 const Category = require("../models/Category");
@@ -186,9 +187,20 @@ router.get("/drills/:id", adminAuth, async (req, res) => {
 });
 
 // ── Content Library: Create Drill ──
-router.post("/drills", adminAuth, async (req, res) => {
+router.post("/drills", adminAuth, upload.fields([
+  { name: "thumbnail", maxCount: 1 },
+  { name: "video", maxCount: 1 },
+]), async (req, res) => {
   try {
-    const drill = await Drill.create(req.body);
+    const data = { ...req.body };
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+    if (req.files?.thumbnail?.[0]) {
+      data.imageUrl = `${baseUrl}/uploads/thumbnails/${req.files.thumbnail[0].filename}`;
+    }
+    if (req.files?.video?.[0]) {
+      data.videoUrl = `${baseUrl}/uploads/videos/${req.files.video[0].filename}`;
+    }
+    const drill = await Drill.create(data);
     res.status(201).json({ drill });
   } catch (error) {
     console.error("Create drill error:", error);

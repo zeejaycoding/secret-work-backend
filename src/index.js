@@ -1,4 +1,5 @@
 const express = require("express");
+const path = require("path");
 const { createServer } = require("http");
 const cors = require("cors");
 const helmet = require("helmet");
@@ -42,6 +43,8 @@ app.use(limiter);
 app.use("/api/webhooks", webhookRouter);
 
 app.use(express.json());
+
+app.use("/uploads", express.static(path.resolve(__dirname, "../uploads")));
 
 app.get("/api/health", (_req, res) => {
   res.json({

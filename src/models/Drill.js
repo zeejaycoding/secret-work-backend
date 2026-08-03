@@ -10,12 +10,22 @@ const drillSchema = new mongoose.Schema(
       enum: ["Dribbling", "Shooting", "Defence", "Passing", "Fitness"],
       default: "Dribbling",
     },
+    level: {
+      type: String,
+      enum: ["Beginner", "Intermediate", "Advanced"],
+      default: "Beginner",
+    },
+    equipment: {
+      type: String,
+      default: "Dumbell",
+    },
     status: {
       type: String,
       enum: ["published", "draft", "archived"],
       default: "draft",
     },
     imageUrl: { type: String, default: "" },
+    videoUrl: { type: String, default: "" },
     duration: { type: String, default: "0 min" },
     views: { type: Number, default: 0 },
     likes: { type: Number, default: 0 },
