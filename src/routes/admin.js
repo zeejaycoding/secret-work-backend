@@ -3,7 +3,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { env } = require("../config/env");
 const { adminAuth } = require("../middleware/adminAuth");
-const { upload } = require("../middleware/upload");
+const { upload, deleteCloudinaryFile } = require("../middleware/upload");
 const { User } = require("../models/User");
 const Drill = require("../models/Drill");
 const Category = require("../models/Category");
@@ -201,12 +201,11 @@ router.post("/drills", adminAuth, upload.fields([
     if (existing) {
       return res.status(409).json({ error: "A drill with this title already exists" });
     }
-    const baseUrl = `${req.protocol}://${req.get("host")}`;
     if (req.files?.thumbnail?.[0]) {
-      data.imageUrl = `${baseUrl}/uploads/thumbnails/${req.files.thumbnail[0].filename}`;
+      data.imageUrl = req.files.thumbnail[0].path;
     }
     if (req.files?.video?.[0]) {
-      data.videoUrl = `${baseUrl}/uploads/videos/${req.files.video[0].filename}`;
+      data.videoUrl = req.files.video[0].path;
     }
     const drill = await Drill.create(data);
     res.status(201).json({ drill });
@@ -232,18 +231,33 @@ const DRILL_UPDATABLE_FIELDS = [
   "views",
 ];
 
-router.put("/drills/:id", adminAuth, async (req, res) => {
+router.put("/drills/:id", adminAuth, upload.fields([
+  { name: "thumbnail", maxCount: 1 },
+  { name: "video", maxCount: 1 },
+]), async (req, res) => {
   try {
+    const existing = await Drill.findById(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ error: "Drill not found" });
+    }
+
     const updates = {};
     for (const key of DRILL_UPDATABLE_FIELDS) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
     }
+
+    if (req.files?.thumbnail?.[0]) {
+      updates.imageUrl = req.files.thumbnail[0].path;
+      deleteCloudinaryFile(existing.imageUrl);
+    }
+    if (req.files?.video?.[0]) {
+      updates.videoUrl = req.files.video[0].path;
+      deleteCloudinaryFile(existing.videoUrl);
+    }
+
     const drill = await Drill.findByIdAndUpdate(req.params.id, updates, {
       new: true,
     });
-    if (!drill) {
-      return res.status(404).json({ error: "Drill not found" });
-    }
     res.json({ drill });
   } catch (error) {
     console.error("Update drill error:", error);
@@ -258,6 +272,8 @@ router.delete("/drills/:id", adminAuth, async (req, res) => {
     if (!drill) {
       return res.status(404).json({ error: "Drill not found" });
     }
+    deleteCloudinaryFile(drill.imageUrl);
+    deleteCloudinaryFile(drill.videoUrl);
     res.json({ success: true });
   } catch (error) {
     console.error("Delete drill error:", error);

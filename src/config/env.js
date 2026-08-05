@@ -20,6 +20,21 @@ const env = {
   adminEmail: process.env.ADMIN_EMAIL || "zahabjahangir12@gmail.com",
   adminPassword: process.env.ADMIN_PASSWORD || "Admin123",
   adminJwtSecret: process.env.ADMIN_JWT_SECRET || "admin-secret-key-change-in-prod",
+  cloudinaryCloudName:
+    process.env.CLOUDINARY_CLOUD_NAME ||
+    process.env.CLOUD_NAME ||
+    process.env.Cloud_name ||
+    "",
+  cloudinaryApiKey:
+    process.env.CLOUDINARY_API_KEY ||
+    process.env.API_KEY ||
+    process.env.API_key ||
+    "",
+  cloudinaryApiSecret:
+    process.env.CLOUDINARY_API_SECRET ||
+    process.env.API_SECRET ||
+    process.env.API_secret ||
+    "",
 };
 
 module.exports = { env };
