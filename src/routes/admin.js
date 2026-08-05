@@ -217,9 +217,28 @@ router.post("/drills", adminAuth, upload.fields([
 });
 
 // ── Content Library: Update Drill ──
+const DRILL_UPDATABLE_FIELDS = [
+  "title",
+  "description",
+  "coach",
+  "category",
+  "level",
+  "equipment",
+  "duration",
+  "status",
+  "completionRate",
+  "avgWatchTime",
+  "likes",
+  "views",
+];
+
 router.put("/drills/:id", adminAuth, async (req, res) => {
   try {
-    const drill = await Drill.findByIdAndUpdate(req.params.id, req.body, {
+    const updates = {};
+    for (const key of DRILL_UPDATABLE_FIELDS) {
+      if (req.body[key] !== undefined) updates[key] = req.body[key];
+    }
+    const drill = await Drill.findByIdAndUpdate(req.params.id, updates, {
       new: true,
     });
     if (!drill) {
