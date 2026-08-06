@@ -11,6 +11,52 @@ const Program = require("../models/Program");
 
 const router = Router();
 
+// Drills visible in a program = all of its drills minus admin-removed ones (and dangling refs)
+function visibleProgramDrills(program) {
+  const removed = new Set(
+    (program.removedDrills || []).map((r) => String(r._id || r))
+  );
+  return (program.drills || [])
+    .filter((d) => d.drill && !removed.has(String(d.drill._id || d.drill)))
+    .sort((a, b) => (a.order || 0) - (b.order || 0));
+}
+
+// Normalize a category so case/whitespace/spelling variants match (Defense == Defence)
+function normalizeCategory(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace("defense", "defence");
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Add every drill in the DB to a program, skipping ones an admin explicitly removed
+async function backfillProgramDrills(program) {
+  const allDrills = await Drill.find({}).sort({ createdAt: 1 });
+  const removedSet = new Set(
+    (program.removedDrills || []).map((r) => String(r._id || r))
+  );
+  const existingIds = new Set(
+    (program.drills || [])
+      .filter((d) => d.drill)
+      .map((d) => String(d.drill._id || d.drill))
+  );
+  const missing = allDrills.filter(
+    (d) => !removedSet.has(String(d._id)) && !existingIds.has(String(d._id))
+  );
+  if (missing.length > 0) {
+    const base = program.drills && program.drills.length ? program.drills.length : 0;
+    missing.forEach((d, i) =>
+      program.drills.push({ drill: d._id, order: base + i + 1 })
+    );
+    await program.save();
+  }
+  return program;
+}
+
 // ── Admin Login ──
 router.post("/login", async (req, res) => {
   try {
@@ -158,7 +204,12 @@ router.get("/drills", adminAuth, async (req, res) => {
       ];
     }
     if (category && category !== "All") {
-      filter.category = category;
+      const cat = String(category).trim();
+      if (cat) {
+        filter.category = {
+          $regex: new RegExp(`^${escapeRegex(cat)}$`, "i"),
+        };
+      }
     }
     if (status && status !== "All") {
       filter.status = status;
@@ -197,6 +248,7 @@ router.post("/drills", adminAuth, upload.fields([
     if (!title) {
       return res.status(400).json({ error: "Drill title is required" });
     }
+    if (data.category) data.category = String(data.category).trim();
     const existing = await Drill.findOne({ title: { $regex: `^${title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" } });
     if (existing) {
       return res.status(409).json({ error: "A drill with this title already exists" });
@@ -313,16 +365,17 @@ router.get("/users", adminAuth, async (req, res) => {
 router.get("/categories", adminAuth, async (req, res) => {
   try {
     const categories = await Category.find().sort({ name: 1 });
-    const drillCounts = await Drill.aggregate([
-      { $group: { _id: "$category", count: { $sum: 1 } } },
-    ]);
+    const drills = await Drill.find({}, { category: 1 });
     const countMap = {};
-    drillCounts.forEach((d) => { countMap[d._id] = d.count; });
+    drills.forEach((d) => {
+      const key = normalizeCategory(d.category);
+      if (key) countMap[key] = (countMap[key] || 0) + 1;
+    });
     const result = categories.map((c) => ({
       _id: c._id,
       name: c.name,
       description: c.description,
-      drillCount: countMap[c.name] || 0,
+      drillCount: countMap[normalizeCategory(c.name)] || 0,
     }));
     res.json({ categories: result });
   } catch (error) {
@@ -378,21 +431,21 @@ router.get("/programs", adminAuth, async (req, res) => {
     let programs = await Program.find(filter)
       .populate("drills.drill")
       .sort({ createdAt: -1 });
-    // Backfill programs that have a category but no drills
+    // Ensure every program lists ALL drills in the DB, unless a drill was specifically
+    // removed by an admin for that program.
     for (const p of programs) {
-      if (p.category && (!p.drills || p.drills.length === 0)) {
-        const matchingDrills = await Drill.find({ category: { $regex: `^${p.category}$`, $options: "i" } }).sort({ createdAt: 1 });
-        if (matchingDrills.length > 0) {
-          p.drills = matchingDrills.map((d, i) => ({ drill: d._id, order: i + 1 }));
-          await p.save();
-        }
-      }
+      await backfillProgramDrills(p);
     }
     // Refetch with populated drills after backfill
     programs = await Program.find(filter)
       .populate("drills.drill")
       .sort({ createdAt: -1 });
-    res.json({ programs });
+    const visible = programs.map((p) => {
+      const plain = p.toObject();
+      plain.drills = visibleProgramDrills(p);
+      return plain;
+    });
+    res.json({ programs: visible });
   } catch (error) {
     console.error("List programs error:", error);
     res.status(500).json({ error: "Failed to fetch programs" });
@@ -402,9 +455,13 @@ router.get("/programs", adminAuth, async (req, res) => {
 // ── Programs: Get Single ──
 router.get("/programs/:id", adminAuth, async (req, res) => {
   try {
-    const program = await Program.findById(req.params.id).populate("drills.drill");
+    let program = await Program.findById(req.params.id).populate("drills.drill");
     if (!program) return res.status(404).json({ error: "Program not found" });
-    res.json({ program });
+    await backfillProgramDrills(program);
+    program = await Program.findById(req.params.id).populate("drills.drill");
+    const plain = program.toObject();
+    plain.drills = visibleProgramDrills(program);
+    res.json({ program: plain });
   } catch (error) {
     console.error("Get program error:", error);
     res.status(500).json({ error: "Failed to fetch program" });
@@ -419,11 +476,8 @@ router.post("/programs", adminAuth, async (req, res) => {
       return res.status(400).json({ error: "Program name is required" });
     }
     const cat = category || "";
-    let drills = [];
-    if (cat) {
-      const matchingDrills = await Drill.find({ category: cat }).sort({ createdAt: 1 });
-      drills = matchingDrills.map((d, i) => ({ drill: d._id, order: i + 1 }));
-    }
+    const allDrills = await Drill.find({}).sort({ createdAt: 1 });
+    const drills = allDrills.map((d, i) => ({ drill: d._id, order: i + 1 }));
     const program = await Program.create({
       name: name.trim(),
       level: level || "Beginner",
@@ -432,7 +486,9 @@ router.post("/programs", adminAuth, async (req, res) => {
       drills,
     });
     const populated = await Program.findById(program._id).populate("drills.drill");
-    res.status(201).json({ program: populated });
+    const plain = populated.toObject();
+    plain.drills = visibleProgramDrills(populated);
+    res.status(201).json({ program: plain });
   } catch (error) {
     console.error("Create program error:", error);
     res.status(500).json({ error: "Failed to create program" });
@@ -444,10 +500,36 @@ router.put("/programs/:id", adminAuth, async (req, res) => {
   try {
     const program = await Program.findByIdAndUpdate(req.params.id, req.body, { new: true }).populate("drills.drill");
     if (!program) return res.status(404).json({ error: "Program not found" });
-    res.json({ program });
+    const plain = program.toObject();
+    plain.drills = visibleProgramDrills(program);
+    res.json({ program: plain });
   } catch (error) {
     console.error("Update program error:", error);
     res.status(500).json({ error: "Failed to update program" });
+  }
+});
+
+// ── Programs: Remove one drill from a program ──
+router.delete("/programs/:id/drills/:drillId", adminAuth, async (req, res) => {
+  try {
+    const program = await Program.findById(req.params.id);
+    if (!program) return res.status(404).json({ error: "Program not found" });
+    const drillId = req.params.drillId;
+    program.removedDrills = program.removedDrills || [];
+    if (!program.removedDrills.some((r) => String(r) === String(drillId))) {
+      program.removedDrills.push(drillId);
+    }
+    program.drills = (program.drills || []).filter(
+      (d) => String(d.drill) !== String(drillId)
+    );
+    await program.save();
+    const populated = await Program.findById(program._id).populate("drills.drill");
+    const plain = populated.toObject();
+    plain.drills = visibleProgramDrills(populated);
+    res.json({ program: plain });
+  } catch (error) {
+    console.error("Remove drill from program error:", error);
+    res.status(500).json({ error: "Failed to remove drill from program" });
   }
 });
 

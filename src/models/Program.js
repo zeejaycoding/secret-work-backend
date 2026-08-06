@@ -22,6 +22,9 @@ const programSchema = new mongoose.Schema(
         order: { type: Number },
       },
     ],
+    removedDrills: [
+      { type: mongoose.Schema.Types.ObjectId, ref: "Drill" },
+    ],
     imageUrl: { type: String, default: "" },
     enrolled: { type: Number, default: 0 },
     completionRate: { type: Number, default: 0 },
