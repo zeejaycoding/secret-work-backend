@@ -12,28 +12,32 @@ cloudinary.config({
 const storage = new CloudinaryStorage({
   cloudinary,
   params: (req, file) => {
-    const isThumbnail = file.fieldname === "thumbnail";
+    const field = file.fieldname;
+    const isVideo = field === "video";
+    const folder =
+      field === "image"
+        ? "pros"
+        : isVideo
+        ? "drills/videos"
+        : "drills/thumbnails";
     return {
-      folder: isThumbnail ? "drills/thumbnails" : "drills/videos",
-      resource_type: isThumbnail ? "image" : "video",
-      allowed_formats: isThumbnail
-        ? ["jpg", "jpeg", "png", "webp", "gif"]
-        : ["mp4", "mov", "m4v", "webm", "avi", "mkv"],
+      folder,
+      resource_type: isVideo ? "video" : "image",
+      allowed_formats: isVideo
+        ? ["mp4", "mov", "m4v", "webm", "avi", "mkv"]
+        : ["jpg", "jpeg", "png", "webp", "gif"],
       public_id: `${Date.now()}-${Math.round(Math.random() * 1e9)}`,
     };
   },
 });
 
 function fileFilter(req, file, cb) {
-  if (file.fieldname === "thumbnail") {
-    if (file.mimetype.startsWith("image/")) return cb(null, true);
-    return cb(new Error("Thumbnail must be an image"));
-  }
   if (file.fieldname === "video") {
     if (file.mimetype.startsWith("video/")) return cb(null, true);
     return cb(new Error("Drill video must be a video file"));
   }
-  return cb(null, true);
+  if (file.mimetype.startsWith("image/")) return cb(null, true);
+  return cb(new Error("Uploaded file must be an image"));
 }
 
 const upload = multer({

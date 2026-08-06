@@ -8,6 +8,7 @@ const { User } = require("../models/User");
 const Drill = require("../models/Drill");
 const Category = require("../models/Category");
 const Program = require("../models/Program");
+const Pro = require("../models/Pro");
 
 const router = Router();
 
@@ -542,6 +543,130 @@ router.delete("/programs/:id", adminAuth, async (req, res) => {
   } catch (error) {
     console.error("Delete program error:", error);
     res.status(500).json({ error: "Failed to delete program" });
+  }
+});
+
+// ── Learn from the Pros ──
+const PRO_UPDATABLE_FIELDS = ["name", "team", "sessions", "featured", "homepageBanner"];
+
+function parseProBool(value) {
+  if (value === undefined) return undefined;
+  return String(value) === "true";
+}
+
+function parseProSessions(value) {
+  if (value === undefined) return undefined;
+  const parsed = parseInt(value, 10);
+  return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+// ── Pros: List ──
+router.get("/pros", adminAuth, async (req, res) => {
+  try {
+    const pros = await Pro.find().sort({ createdAt: -1 });
+    res.json({ pros });
+  } catch (error) {
+    console.error("List pros error:", error);
+    res.status(500).json({ error: "Failed to fetch pros" });
+  }
+});
+
+// ── Pros: Get Single ──
+router.get("/pros/:id", adminAuth, async (req, res) => {
+  try {
+    const pro = await Pro.findById(req.params.id);
+    if (!pro) return res.status(404).json({ error: "Athlete not found" });
+    res.json({ pro });
+  } catch (error) {
+    console.error("Get pro error:", error);
+    res.status(500).json({ error: "Failed to fetch pro" });
+  }
+});
+
+// ── Pros: Create ──
+router.post("/pros", adminAuth, upload.single("image"), async (req, res) => {
+  try {
+    const name = (req.body.name || "").trim();
+    if (!name) {
+      return res.status(400).json({ error: "Athlete name is required" });
+    }
+
+    const featured = parseProBool(req.body.featured);
+    const homepageBanner = parseProBool(req.body.homepageBanner);
+    const sessions = parseProSessions(req.body.sessions);
+
+    const data = {
+      name,
+      team: (req.body.team || "").trim(),
+      sessions: sessions === undefined ? 0 : sessions,
+      featured: featured === undefined ? false : featured,
+      homepageBanner: homepageBanner === undefined ? false : homepageBanner,
+    };
+    if (req.file) data.imageUrl = req.file.path;
+
+    if (data.homepageBanner) {
+      await Pro.updateMany({ homepageBanner: true }, { homepageBanner: false });
+    }
+
+    const pro = await Pro.create(data);
+    res.status(201).json({ pro });
+  } catch (error) {
+    console.error("Create pro error:", error);
+    res.status(500).json({ error: "Failed to create pro" });
+  }
+});
+
+// ── Pros: Update ──
+router.put("/pros/:id", adminAuth, upload.single("image"), async (req, res) => {
+  try {
+    const existing = await Pro.findById(req.params.id);
+    if (!existing) return res.status(404).json({ error: "Athlete not found" });
+
+    const updates = {};
+    for (const key of PRO_UPDATABLE_FIELDS) {
+      if (req.body[key] !== undefined) updates[key] = req.body[key];
+    }
+    if (updates.name !== undefined) updates.name = String(updates.name).trim();
+    if (updates.team !== undefined) updates.team = String(updates.team).trim();
+
+    const sessions = parseProSessions(updates.sessions);
+    if (sessions !== undefined) updates.sessions = sessions;
+
+    const featured = parseProBool(updates.featured);
+    const homepageBanner = parseProBool(updates.homepageBanner);
+    if (featured !== undefined) updates.featured = featured;
+    if (homepageBanner !== undefined) updates.homepageBanner = homepageBanner;
+
+    if (req.file) {
+      updates.imageUrl = req.file.path;
+      deleteCloudinaryFile(existing.imageUrl);
+    }
+
+    if (updates.homepageBanner === true) {
+      await Pro.updateMany(
+        { _id: { $ne: existing._id }, homepageBanner: true },
+        { homepageBanner: false }
+      );
+    }
+
+    const pro = await Pro.findByIdAndUpdate(req.params.id, updates, { new: true });
+    res.json({ pro });
+  } catch (error) {
+    console.error("Update pro error:", error);
+    res.status(500).json({ error: "Failed to update pro" });
+  }
+});
+
+// ── Pros: Delete ──
+router.delete("/pros/:id", adminAuth, async (req, res) => {
+  try {
+    const pro = await Pro.findByIdAndDelete(req.params.id);
+    if (!pro) return res.status(404).json({ error: "Athlete not found" });
+    deleteCloudinaryFile(pro.imageUrl);
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Delete pro error:", error);
+    res.status(500).json({ error: "Failed to delete pro" });
   }
 });
 
