@@ -4,6 +4,7 @@ const Stripe = require("stripe");
 const { User } = require("../models/User");
 const { env } = require("../config/env");
 const { authMiddleware } = require("../middleware/auth");
+const { upsertTransaction } = require("../services/transactions");
 
 const stripe = new Stripe(env.stripeSecretKey);
 
@@ -227,8 +228,95 @@ webhookRouter.post(
 
               await user.save();
               console.log(`User ${user.email} upgraded to pro`);
+
+              try {
+                await upsertTransaction({
+                  invoiceId: session.invoice || "",
+                  chargeId: session.payment_intent || "",
+                  subscriptionId: session.subscription || "",
+                  userId: user._id,
+                  userEmail: user.email,
+                  userName: `${user.firstName || ""} ${user.lastName || ""}`.trim(),
+                  plan: toBillingInterval(session.metadata?.plan) || "",
+                  amount: (session.amount_total || 0) / 100,
+                  status: "success",
+                  date: new Date(),
+                });
+              } catch (txErr) {
+                console.error("Record checkout transaction error:", txErr.message || txErr);
+              }
             }
           }
+          break;
+        }
+
+        case "invoice.paid": {
+          const invoice = event.data.object;
+          const user = invoice.customer
+            ? await User.findOne({ stripeCustomerId: invoice.customer })
+            : null;
+          const interval = invoice.lines?.data?.[0]?.plan?.recurring?.interval;
+          await upsertTransaction({
+            invoiceId: invoice.id,
+            chargeId: invoice.payment_intent || "",
+            subscriptionId: invoice.subscription || "",
+            userId: user?._id,
+            userEmail: user?.email || invoice.customer_email || "",
+            userName: user
+              ? `${user.firstName || ""} ${user.lastName || ""}`.trim()
+              : "",
+            plan: toBillingInterval(interval) || "",
+            amount: (invoice.amount_paid || 0) / 100,
+            status: "success",
+            date: new Date(
+              (invoice.status_transitions?.paid_at || invoice.created) * 1000
+            ),
+          });
+          break;
+        }
+
+        case "invoice.payment_failed": {
+          const invoice = event.data.object;
+          const user = invoice.customer
+            ? await User.findOne({ stripeCustomerId: invoice.customer })
+            : null;
+          const interval = invoice.lines?.data?.[0]?.plan?.recurring?.interval;
+          await upsertTransaction({
+            invoiceId: invoice.id,
+            chargeId: invoice.payment_intent || "",
+            subscriptionId: invoice.subscription || "",
+            userId: user?._id,
+            userEmail: user?.email || invoice.customer_email || "",
+            userName: user
+              ? `${user.firstName || ""} ${user.lastName || ""}`.trim()
+              : "",
+            plan: toBillingInterval(interval) || "",
+            amount: (invoice.amount_due || 0) / 100,
+            status: "failed",
+            date: new Date((invoice.created || Date.now()) * 1000),
+          });
+          break;
+        }
+
+        case "charge.refunded": {
+          const charge = event.data.object;
+          const user = charge.customer
+            ? await User.findOne({ stripeCustomerId: charge.customer })
+            : null;
+          await upsertTransaction({
+            invoiceId: charge.invoice || "",
+            chargeId: charge.id,
+            subscriptionId: "",
+            userId: user?._id,
+            userEmail: user?.email || charge.billing_details?.email || "",
+            userName: user
+              ? `${user.firstName || ""} ${user.lastName || ""}`.trim()
+              : "",
+            plan: "",
+            amount: (charge.amount_refunded || 0) / 100,
+            status: "refunded",
+            date: new Date((charge.refunded_at || charge.created) * 1000),
+          });
           break;
         }
 
@@ -267,17 +355,21 @@ webhookRouter.post(
             await user.save();
             console.log(`User ${user.email} downgraded to free`);
           }
-          break;
-        }
-
-        case "invoice.payment_failed": {
-          const invoice = event.data.object;
-          if (invoice.subscription) {
-            const user = await User.findOne({ stripeSubscriptionId: invoice.subscription });
-            if (user) {
-              console.log(`Payment failed for ${user.email} - subscription ${invoice.subscription}`);
-            }
-          }
+          const interval = subscription?.items?.data?.[0]?.plan?.recurring?.interval;
+          await upsertTransaction({
+            invoiceId: "",
+            chargeId: "",
+            subscriptionId: subscription.id,
+            userId: user?._id,
+            userEmail: user?.email || "",
+            userName: user
+              ? `${user.firstName || ""} ${user.lastName || ""}`.trim()
+              : "",
+            plan: toBillingInterval(interval) || "",
+            amount: 0,
+            status: "cancelled",
+            date: new Date((subscription.canceled_at || Date.now()) * 1000),
+          });
           break;
         }
       }

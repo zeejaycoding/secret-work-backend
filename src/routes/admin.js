@@ -11,6 +11,7 @@ const Category = require("../models/Category");
 const Program = require("../models/Program");
 const Pro = require("../models/Pro");
 const Podcast = require("../models/Podcast");
+const Transaction = require("../models/Transaction");
 const { transcribePodcast } = require("../services/transcribe");
 const {
   sendPasswordResetEmail,
@@ -232,6 +233,119 @@ router.get("/dashboard", adminAuth, async (req, res) => {
   } catch (error) {
     console.error("Dashboard stats error:", error);
     res.status(500).json({ error: "Failed to fetch dashboard stats" });
+  }
+});
+
+// ── Subscriptions ──
+router.get("/subscriptions", adminAuth, async (req, res) => {
+  try {
+    const { tab = "all", search = "" } = req.query;
+
+    const proUsers = await User.countDocuments({ subscriptionTier: "pro" });
+    const premiumUsers = await User.countDocuments({
+      subscriptionTier: "premium",
+    });
+    const freeUsers = await User.countDocuments({ subscriptionTier: "free" });
+    const activeSubscriptions = proUsers + premiumUsers;
+
+    const monthlyPro = await User.countDocuments({
+      subscriptionTier: "pro",
+      billingInterval: "monthly",
+    });
+    const annualPro = await User.countDocuments({
+      subscriptionTier: "pro",
+      billingInterval: "annual",
+    });
+
+    const monthlyPrice = 9.5;
+    const annualPrice = 79;
+
+    let mrr = 0;
+    if (annualPro > 0) mrr += (annualPro * annualPrice) / 12;
+    mrr += monthlyPro * monthlyPrice;
+
+    const statsAgg = await Transaction.aggregate([
+      {
+        $group: {
+          _id: null,
+          totalRevenue: { $sum: "$amount" },
+          failedCount: { $sum: { $cond: [{ $eq: ["$status", "failed"] }, 1, 0] } },
+          refundedCount: { $sum: { $cond: [{ $eq: ["$status", "refunded"] }, 1, 0] } },
+        },
+      },
+    ]);
+
+    const totalRevenue = statsAgg[0]?.totalRevenue || 0;
+    const failedCount = statsAgg[0]?.failedCount || 0;
+    const refundedCount = statsAgg[0]?.refundedCount || 0;
+
+    const churned = await Transaction.countDocuments({ status: "cancelled" });
+    const churnRate = activeSubscriptions + churned
+      ? (churned / (activeSubscriptions + churned)) * 100
+      : 0;
+
+    const today = new Date();
+    const dailyRevenue = [];
+    for (let i = 13; i >= 0; i--) {
+      const day = new Date(today);
+      day.setDate(today.getDate() - i);
+      day.setHours(0, 0, 0, 0);
+      const next = new Date(day);
+      next.setDate(day.getDate() + 1);
+      const agg = await Transaction.aggregate([
+        {
+          $match: {
+            status: "success",
+            date: { $gte: day, $lt: next },
+          },
+        },
+        { $group: { _id: null, revenue: { $sum: "$amount" } } },
+      ]);
+      dailyRevenue.push({
+        date: day.toISOString().slice(0, 10),
+        label: `d${i + 1}`,
+        revenue: Math.round((agg[0]?.revenue || 0) * 100) / 100,
+      });
+    }
+
+    const planBreakdown = [
+      { plan: "Free", count: freeUsers },
+      { plan: "Monthly Pro", count: monthlyPro },
+      { plan: "Annual Pro", count: annualPro },
+    ];
+
+    const and = [];
+    if (tab === "failed") and.push({ status: "failed" });
+    if (tab === "refunds") and.push({ status: "refunded" });
+    if (search) {
+      and.push({
+        $or: [
+          { userEmail: { $regex: search, $options: "i" } },
+          { userName: { $regex: search, $options: "i" } },
+        ],
+      });
+    }
+    const filter = and.length ? { $and: and } : {};
+
+    const transactions = await Transaction.find(filter)
+      .sort({ date: -1 })
+      .limit(200);
+
+    res.json({
+      stats: {
+        mrr: Math.round(mrr * 100) / 100,
+        activeSubscriptions,
+        churnRate: Math.round(churnRate * 100) / 100,
+        failedCount,
+        totalRevenue: Math.round(totalRevenue * 100) / 100,
+      },
+      dailyRevenue,
+      planBreakdown,
+      transactions,
+    });
+  } catch (error) {
+    console.error("Subscriptions stats error:", error);
+    res.status(500).json({ error: "Failed to fetch subscriptions stats" });
   }
 });
 
