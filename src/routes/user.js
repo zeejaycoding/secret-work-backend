@@ -2,8 +2,20 @@ const { Router } = require("express");
 const bcrypt = require("bcryptjs");
 const { User } = require("../models/User");
 const { authMiddleware } = require("../middleware/auth");
+const Pro = require("../models/Pro");
 
 const router = Router();
+
+// ── Pros: Public List ──
+router.get("/pros", async (req, res) => {
+  try {
+    const pros = await Pro.find().sort({ createdAt: -1 });
+    res.json({ pros });
+  } catch (error) {
+    console.error("List pros error:", error);
+    res.status(500).json({ error: "Failed to fetch pros" });
+  }
+});
 
 router.use(authMiddleware);
 
