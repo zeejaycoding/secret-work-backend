@@ -10,6 +10,7 @@ const Category = require("../models/Category");
 const Program = require("../models/Program");
 const Pro = require("../models/Pro");
 const Podcast = require("../models/Podcast");
+const { transcribePodcast } = require("../services/transcribe");
 
 const router = Router();
 
@@ -42,6 +43,26 @@ function formatPodcastDate(d) {
     day: "numeric",
     year: "numeric",
   });
+}
+
+async function runTranscription(podcast) {
+  if (!podcast.mediaUrl) {
+    podcast.transcriptStatus = "none";
+    await podcast.save();
+    return;
+  }
+  podcast.transcriptStatus = "pending";
+  podcast.transcript = [];
+  await podcast.save();
+  try {
+    const transcript = await transcribePodcast(podcast.mediaUrl);
+    podcast.transcript = transcript;
+    podcast.transcriptStatus = "done";
+  } catch (error) {
+    console.error("Transcription failed:", error.message);
+    podcast.transcriptStatus = "failed";
+  }
+  await podcast.save();
 }
 
 // Add every drill in the DB to a program, skipping ones an admin explicitly removed
@@ -793,6 +814,7 @@ router.post("/podcasts", adminAuth, upload.fields([
     const data = {
       title,
       host,
+      guest: (req.body.guest || "").trim(),
       type: req.body.type === "Video" ? "Video" : "Audio",
       duration: (req.body.duration || "").trim() || "0 min",
       description: (req.body.description || "").trim(),
@@ -815,9 +837,33 @@ router.post("/podcasts", adminAuth, upload.fields([
 
     const podcast = await Podcast.create(data);
     res.status(201).json({ podcast });
+
+    if (podcast.mediaUrl) {
+      podcast.transcriptStatus = "pending";
+      await podcast.save();
+      runTranscription(podcast).catch(() => {});
+    }
   } catch (error) {
     console.error("Create podcast error:", error);
     res.status(500).json({ error: "Failed to create podcast" });
+  }
+});
+
+// ── Podcasts: Generate / Regenerate Transcript ──
+router.post("/podcasts/:id/transcribe", adminAuth, async (req, res) => {
+  try {
+    const podcast = await Podcast.findById(req.params.id);
+    if (!podcast) return res.status(404).json({ error: "Podcast not found" });
+    if (!podcast.mediaUrl) {
+      return res
+        .status(400)
+        .json({ error: "Podcast has no media file to transcribe" });
+    }
+    await runTranscription(podcast);
+    res.json({ podcast });
+  } catch (error) {
+    console.error("Transcribe podcast error:", error);
+    res.status(500).json({ error: "Failed to generate transcript" });
   }
 });
 
@@ -825,6 +871,7 @@ router.post("/podcasts", adminAuth, upload.fields([
 const PODCAST_UPDATABLE_FIELDS = [
   "title",
   "host",
+  "guest",
   "type",
   "duration",
   "description",
@@ -847,6 +894,7 @@ router.put("/podcasts/:id", adminAuth, upload.fields([
     }
     if (updates.title !== undefined) updates.title = String(updates.title).trim();
     if (updates.host !== undefined) updates.host = String(updates.host).trim();
+    if (updates.guest !== undefined) updates.guest = String(updates.guest).trim();
     if (updates.status === "Published") updates.date = formatPodcastDate(new Date());
 
     const scheduleDate = req.body.scheduleDate

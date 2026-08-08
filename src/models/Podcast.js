@@ -4,6 +4,7 @@ const podcastSchema = new mongoose.Schema(
   {
     title: { type: String, required: true, trim: true },
     host: { type: String, required: true, trim: true },
+    guest: { type: String, default: "", trim: true },
     type: {
       type: String,
       enum: ["Video", "Audio"],
@@ -24,6 +25,12 @@ const podcastSchema = new mongoose.Schema(
     mediaType: { type: String, default: "" },
     mediaName: { type: String, default: "" },
     scheduleDate: { type: Date, default: null },
+    transcript: { type: [new mongoose.Schema({ time: String, text: String }, { _id: false })], default: [] },
+    transcriptStatus: {
+      type: String,
+      enum: ["none", "pending", "done", "failed"],
+      default: "none",
+    },
   },
   { timestamps: true }
 );

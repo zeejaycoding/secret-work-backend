@@ -35,6 +35,7 @@ const env = {
     process.env.API_SECRET ||
     process.env.API_secret ||
     "",
+  openaiApiKey: process.env.OPENAI_API_KEY || "",
 };
 
 module.exports = { env };
