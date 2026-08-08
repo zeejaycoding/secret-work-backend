@@ -127,6 +127,33 @@ router.post("/progress/completed-drills", async (req, res) => {
   }
 });
 
+// ── Watch Time Tracking (per user, from the app players) ──
+router.post("/progress/watch", async (req, res) => {
+  try {
+    const seconds = Number(req.body.seconds);
+    if (!Number.isFinite(seconds) || seconds <= 0) {
+      return res.status(400).json({ error: "seconds is required and must be positive" });
+    }
+
+    // Guard against absurd batches (max 2 hours per report)
+    const clamped = Math.min(Math.round(seconds), 7200);
+
+    const user = await User.findByIdAndUpdate(
+      req.auth.userId,
+      { $inc: { watchTimeSec: clamped } },
+      { new: true }
+    );
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    res.json({ success: true, watchTimeSec: user.watchTimeSec });
+  } catch (error) {
+    console.error("Record watch time error:", error);
+    res.status(500).json({ error: "Failed to record watch time" });
+  }
+});
+
 // ── Program Enrollment ──
 router.post("/programs/enroll", async (req, res) => {
   try {

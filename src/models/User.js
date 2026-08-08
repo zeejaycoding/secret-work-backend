@@ -55,6 +55,7 @@ const userSchema = new mongoose.Schema(
         ref: "Drill",
       },
     ],
+    watchTimeSec: { type: Number, default: 0 },
     enrolledPrograms: [
       {
         type: mongoose.Schema.Types.ObjectId,
