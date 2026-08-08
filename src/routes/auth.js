@@ -76,6 +76,11 @@ router.post("/login", async (req, res) => {
       return;
     }
 
+    if (user.status === "suspended") {
+      res.status(403).json({ error: "Your account has been suspended" });
+      return;
+    }
+
     if (!user.password) {
       res.status(401).json({
         error: "No password set. Please use 'Forgot Password' to set one.",
@@ -295,6 +300,10 @@ router.post("/social-login", async (req, res) => {
     let user = await User.findOne({ email: normalizedEmail });
 
     if (user) {
+      if (user.status === "suspended") {
+        res.status(403).json({ error: "Your account has been suspended" });
+        return;
+      }
       if (!user.firstName && verifiedFirstName) user.firstName = verifiedFirstName;
       if (!user.lastName && verifiedLastName) user.lastName = verifiedLastName;
       if (!user.avatarUrl && avatarUrl) user.avatarUrl = avatarUrl;

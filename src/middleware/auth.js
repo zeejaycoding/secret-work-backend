@@ -1,7 +1,8 @@
 const jwt = require("jsonwebtoken");
 const { env } = require("../config/env");
+const { User } = require("../models/User");
 
-function authMiddleware(req, res, next) {
+async function authMiddleware(req, res, next) {
   try {
     const authHeader = req.headers.authorization;
 
@@ -18,6 +19,16 @@ function authMiddleware(req, res, next) {
     }
 
     const decoded = jwt.verify(token, env.jwtSecret);
+
+    const user = await User.findById(decoded.userId).select("status");
+    if (!user) {
+      res.status(401).json({ error: "User no longer exists" });
+      return;
+    }
+    if (user.status === "suspended") {
+      res.status(403).json({ error: "Your account has been suspended" });
+      return;
+    }
 
     req.auth = {
       userId: decoded.userId,

@@ -1,6 +1,7 @@
 const { Router } = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
 const { env } = require("../config/env");
 const { adminAuth } = require("../middleware/adminAuth");
 const { upload, deleteCloudinaryFile } = require("../middleware/upload");
@@ -11,8 +12,19 @@ const Program = require("../models/Program");
 const Pro = require("../models/Pro");
 const Podcast = require("../models/Podcast");
 const { transcribePodcast } = require("../services/transcribe");
+const {
+  sendPasswordResetEmail,
+} = require("../services/email");
 
 const router = Router();
+
+function hashValue(value) {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function createOtpCode() {
+  return crypto.randomInt(10000, 100000).toString();
+}
 
 // Drills visible in a program = all of its drills minus admin-removed ones (and dangling refs)
 function visibleProgramDrills(program) {
@@ -459,6 +471,44 @@ router.put("/users/:id", adminAuth, async (req, res) => {
   } catch (error) {
     console.error("Update user error:", error);
     res.status(500).json({ error: "Failed to update user" });
+  }
+});
+
+// ── Users: Admin-triggered password reset email ──
+router.post("/users/:id/reset-password", adminAuth, async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    if (user.status === "suspended") {
+      return res.status(400).json({
+        error: "Cannot reset the password of a suspended account",
+      });
+    }
+
+    const otpCode = createOtpCode();
+    user.passwordResetCodeHash = hashValue(otpCode);
+    user.passwordResetCodeExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    user.passwordResetAttempts = 0;
+    user.passwordResetTokenHash = undefined;
+    user.passwordResetTokenExpiresAt = undefined;
+    await user.save();
+
+    try {
+      await sendPasswordResetEmail({ toEmail: user.email, otpCode });
+    } catch (emailError) {
+      console.error("Failed to send reset email:", emailError.message || emailError);
+      res.status(502).json({
+        error: "Unable to send reset email. The sender email may not be verified in SendGrid.",
+      });
+      return;
+    }
+
+    console.log(`Admin sent password reset email to: ${user.email}`);
+    res.json({ success: true, message: `Reset email sent to ${user.email}` });
+  } catch (error) {
+    console.error("Admin reset user password error:", error);
+    res.status(500).json({ error: "Failed to send reset email" });
   }
 });
 

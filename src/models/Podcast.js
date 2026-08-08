@@ -12,7 +12,9 @@ const podcastSchema = new mongoose.Schema(
     },
     date: { type: String, default: "" },
     plays: { type: Number, default: 0 },
+    watchTimeSec: { type: Number, default: 0 },
     completion: { type: Number, default: 0 },
+    completionCount: { type: Number, default: 0 },
     status: {
       type: String,
       enum: ["Published", "Scheduled"],
