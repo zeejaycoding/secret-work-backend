@@ -337,19 +337,38 @@ router.delete("/drills/:id", adminAuth, async (req, res) => {
 // ── Users List ──
 router.get("/users", adminAuth, async (req, res) => {
   try {
-    const { search, tier } = req.query;
-    const filter = {};
+    const { search, plan, status } = req.query;
+    const and = [];
 
     if (search) {
-      filter.$or = [
-        { firstName: { $regex: search, $options: "i" } },
-        { lastName: { $regex: search, $options: "i" } },
-        { email: { $regex: search, $options: "i" } },
-      ];
+      and.push({
+        $or: [
+          { firstName: { $regex: search, $options: "i" } },
+          { lastName: { $regex: search, $options: "i" } },
+          { email: { $regex: search, $options: "i" } },
+        ],
+      });
     }
-    if (tier && tier !== "All") {
-      filter.subscriptionTier = tier;
+    if (plan && plan !== "all") {
+      if (plan === "free") {
+        and.push({ subscriptionTier: "free" });
+      } else if (plan === "monthly") {
+        and.push(
+          { subscriptionTier: { $in: ["pro", "premium"] } },
+          { billingInterval: { $ne: "annual" } }
+        );
+      } else if (plan === "annual") {
+        and.push(
+          { subscriptionTier: { $in: ["pro", "premium"] } },
+          { billingInterval: "annual" }
+        );
+      }
     }
+    if (status && status !== "all") {
+      and.push({ status });
+    }
+
+    const filter = and.length ? { $and: and } : {};
 
     const users = await User.find(filter)
       .sort({ createdAt: -1 })
@@ -359,6 +378,33 @@ router.get("/users", adminAuth, async (req, res) => {
   } catch (error) {
     console.error("List users error:", error);
     res.status(500).json({ error: "Failed to fetch users" });
+  }
+});
+
+// ── Users: Update (status, role) ──
+const USER_UPDATABLE_FIELDS = ["status", "role"];
+
+router.put("/users/:id", adminAuth, async (req, res) => {
+  try {
+    const updates = {};
+    for (const key of USER_UPDATABLE_FIELDS) {
+      if (req.body[key] !== undefined) updates[key] = req.body[key];
+    }
+    if (updates.status !== undefined && !["active", "suspended"].includes(updates.status)) {
+      return res.status(400).json({ error: "Invalid status" });
+    }
+    if (updates.role !== undefined && !["member", "coach"].includes(updates.role)) {
+      return res.status(400).json({ error: "Invalid role" });
+    }
+
+    const user = await User.findByIdAndUpdate(req.params.id, updates, { new: true })
+      .select("-password -passwordResetCodeHash -passwordResetTokenHash");
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    res.json({ user });
+  } catch (error) {
+    console.error("Update user error:", error);
+    res.status(500).json({ error: "Failed to update user" });
   }
 });
 

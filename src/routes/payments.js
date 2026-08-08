@@ -12,6 +12,13 @@ const PLAN_PRICES = {
   annually: { amount: 7900, interval: "year", label: "Annual Pro" },
 };
 
+// Map Stripe/plan interval values to our billingInterval field
+function toBillingInterval(value) {
+  if (value === "year" || value === "annually") return "annual";
+  if (value === "month" || value === "monthly") return "monthly";
+  return undefined;
+}
+
 const checkoutRouter = Router();
 
 checkoutRouter.post("/checkout", authMiddleware, async (req, res) => {
@@ -114,10 +121,13 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
     const isActive =
       subscription && ["active", "trialing"].includes(subscription.status);
 
+    const interval = subscription?.items?.data?.[0]?.plan?.recurring?.interval;
+
     // Upgrade user if Stripe shows an active subscription
     if (isActive && user.subscriptionTier !== "pro") {
       user.subscriptionTier = "pro";
       user.stripeSubscriptionId = subscription.id;
+      user.billingInterval = toBillingInterval(interval);
       if (subscription.current_period_end) {
         user.subscriptionExpiry = new Date(subscription.current_period_end * 1000);
       }
@@ -130,6 +140,7 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
       user.subscriptionTier = "free";
       user.stripeSubscriptionId = undefined;
       user.subscriptionExpiry = undefined;
+      user.billingInterval = undefined;
       await user.save();
     }
 
@@ -137,8 +148,7 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
       tier: user.subscriptionTier,
       expiry: user.subscriptionExpiry,
       isActive: !!isActive,
-      plan:
-        subscription?.items?.data?.[0]?.plan?.recurring?.interval || null,
+      plan: interval || null,
     });
   } catch (error) {
     console.error("Subscription status error:", error.message || error);
@@ -200,6 +210,7 @@ webhookRouter.post(
             if (user) {
               user.subscriptionTier = "pro";
               user.stripeSubscriptionId = session.subscription;
+              user.billingInterval = toBillingInterval(session.metadata?.plan);
 
               if (session.subscription) {
                 try {
@@ -227,6 +238,9 @@ webhookRouter.post(
           if (user) {
             if (["active", "trialing"].includes(subscription.status)) {
               user.subscriptionTier = "pro";
+              user.billingInterval = toBillingInterval(
+                subscription?.items?.data?.[0]?.plan?.recurring?.interval
+              );
               if (subscription.current_period_end) {
                 user.subscriptionExpiry = new Date(subscription.current_period_end * 1000);
               }
@@ -234,6 +248,7 @@ webhookRouter.post(
               user.subscriptionTier = "free";
               user.stripeSubscriptionId = undefined;
               user.subscriptionExpiry = undefined;
+              user.billingInterval = undefined;
             }
             await user.save();
             console.log(`Subscription updated for ${user.email}: ${subscription.status}`);
@@ -248,6 +263,7 @@ webhookRouter.post(
             user.subscriptionTier = "free";
             user.stripeSubscriptionId = undefined;
             user.subscriptionExpiry = undefined;
+            user.billingInterval = undefined;
             await user.save();
             console.log(`User ${user.email} downgraded to free`);
           }

@@ -35,6 +35,20 @@ const userSchema = new mongoose.Schema(
       default: "free",
     },
     subscriptionExpiry: { type: Date },
+    billingInterval: {
+      type: String,
+      enum: ["monthly", "annual"],
+    },
+    status: {
+      type: String,
+      enum: ["active", "suspended"],
+      default: "active",
+    },
+    role: {
+      type: String,
+      enum: ["member", "coach"],
+      default: "member",
+    },
     stripeCustomerId: { type: String },
     stripeSubscriptionId: { type: String },
     passwordResetCodeHash: { type: String },
