@@ -49,6 +49,18 @@ const userSchema = new mongoose.Schema(
       enum: ["member", "coach"],
       default: "member",
     },
+    completedDrills: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Drill",
+      },
+    ],
+    enrolledPrograms: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Program",
+      },
+    ],
     stripeCustomerId: { type: String },
     stripeSubscriptionId: { type: String },
     passwordResetCodeHash: { type: String },

@@ -9,6 +9,7 @@ const Drill = require("../models/Drill");
 const Category = require("../models/Category");
 const Program = require("../models/Program");
 const Pro = require("../models/Pro");
+const Podcast = require("../models/Podcast");
 
 const router = Router();
 
@@ -32,6 +33,15 @@ function normalizeCategory(value) {
 
 function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function formatPodcastDate(d) {
+  if (!d) return "";
+  return d.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
 }
 
 // Add every drill in the DB to a program, skipping ones an admin explicitly removed
@@ -381,6 +391,29 @@ router.get("/users", adminAuth, async (req, res) => {
   }
 });
 
+// ── Users: Get Single (with drill history + enrolled programs) ──
+router.get("/users/:id", adminAuth, async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id).select(
+      "-password -passwordResetCodeHash -passwordResetTokenHash"
+    );
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const drillHistory = await Drill.find({
+      _id: { $in: user.completedDrills || [] },
+    }).select("title coach category views imageUrl");
+
+    const enrolledPrograms = await Program.find({
+      _id: { $in: user.enrolledPrograms || [] },
+    }).select("name");
+
+    res.json({ user, drillHistory, enrolledPrograms });
+  } catch (error) {
+    console.error("Get user error:", error);
+    res.status(500).json({ error: "Failed to fetch user" });
+  }
+});
+
 // ── Users: Update (status, role) ──
 const USER_UPDATABLE_FIELDS = ["status", "role"];
 
@@ -713,6 +746,152 @@ router.delete("/pros/:id", adminAuth, async (req, res) => {
   } catch (error) {
     console.error("Delete pro error:", error);
     res.status(500).json({ error: "Failed to delete pro" });
+  }
+});
+
+// ── Podcasts: List ──
+router.get("/podcasts", adminAuth, async (req, res) => {
+  try {
+    const podcasts = await Podcast.find().sort({ createdAt: -1 });
+    res.json({ podcasts });
+  } catch (error) {
+    console.error("List podcasts error:", error);
+    res.status(500).json({ error: "Failed to fetch podcasts" });
+  }
+});
+
+// ── Podcasts: Get Single ──
+router.get("/podcasts/:id", adminAuth, async (req, res) => {
+  try {
+    const podcast = await Podcast.findById(req.params.id);
+    if (!podcast) return res.status(404).json({ error: "Podcast not found" });
+    res.json({ podcast });
+  } catch (error) {
+    console.error("Get podcast error:", error);
+    res.status(500).json({ error: "Failed to fetch podcast" });
+  }
+});
+
+// ── Podcasts: Create ──
+router.post("/podcasts", adminAuth, upload.fields([
+  { name: "thumbnail", maxCount: 1 },
+  { name: "media", maxCount: 1 },
+]), async (req, res) => {
+  try {
+    const title = (req.body.title || "").trim();
+    const host = (req.body.host || "").trim();
+    if (!title) {
+      return res.status(400).json({ error: "Episode title is required" });
+    }
+    if (!host) {
+      return res.status(400).json({ error: "Host is required" });
+    }
+
+    const scheduled = req.body.status === "Scheduled";
+    const scheduleDate = req.body.scheduleDate ? new Date(req.body.scheduleDate) : null;
+
+    const data = {
+      title,
+      host,
+      type: req.body.type === "Video" ? "Video" : "Audio",
+      duration: (req.body.duration || "").trim() || "0 min",
+      description: (req.body.description || "").trim(),
+      status: scheduled ? "Scheduled" : "Published",
+      date: scheduleDate && !isNaN(scheduleDate) ? formatPodcastDate(scheduleDate) : formatPodcastDate(new Date()),
+      scheduleDate: scheduleDate && !isNaN(scheduleDate) ? scheduleDate : null,
+    };
+
+    if (req.files?.thumbnail?.[0]) {
+      data.imageUrl = req.files.thumbnail[0].path;
+    }
+    if (req.files?.media?.[0]) {
+      const file = req.files.media[0];
+      data.mediaUrl = file.path;
+      data.mediaType = file.mimetype;
+      data.mediaName = file.originalname || "";
+      if (file.mimetype.startsWith("video/")) data.type = "Video";
+      else if (file.mimetype.startsWith("audio/")) data.type = "Audio";
+    }
+
+    const podcast = await Podcast.create(data);
+    res.status(201).json({ podcast });
+  } catch (error) {
+    console.error("Create podcast error:", error);
+    res.status(500).json({ error: "Failed to create podcast" });
+  }
+});
+
+// ── Podcasts: Update ──
+const PODCAST_UPDATABLE_FIELDS = [
+  "title",
+  "host",
+  "type",
+  "duration",
+  "description",
+  "status",
+  "completion",
+  "plays",
+];
+
+router.put("/podcasts/:id", adminAuth, upload.fields([
+  { name: "thumbnail", maxCount: 1 },
+  { name: "media", maxCount: 1 },
+]), async (req, res) => {
+  try {
+    const existing = await Podcast.findById(req.params.id);
+    if (!existing) return res.status(404).json({ error: "Podcast not found" });
+
+    const updates = {};
+    for (const key of PODCAST_UPDATABLE_FIELDS) {
+      if (req.body[key] !== undefined) updates[key] = req.body[key];
+    }
+    if (updates.title !== undefined) updates.title = String(updates.title).trim();
+    if (updates.host !== undefined) updates.host = String(updates.host).trim();
+    if (updates.status === "Published") updates.date = formatPodcastDate(new Date());
+
+    const scheduleDate = req.body.scheduleDate
+      ? new Date(req.body.scheduleDate)
+      : null;
+    if (scheduleDate && !isNaN(scheduleDate)) {
+      updates.date = formatPodcastDate(scheduleDate);
+      updates.scheduleDate = scheduleDate;
+    }
+
+    if (req.files?.thumbnail?.[0]) {
+      updates.imageUrl = req.files.thumbnail[0].path;
+      deleteCloudinaryFile(existing.imageUrl);
+    }
+    if (req.files?.media?.[0]) {
+      const file = req.files.media[0];
+      updates.mediaUrl = file.path;
+      updates.mediaType = file.mimetype;
+      updates.mediaName = file.originalname || "";
+      if (file.mimetype.startsWith("video/")) updates.type = "Video";
+      else if (file.mimetype.startsWith("audio/")) updates.type = "Audio";
+      deleteCloudinaryFile(existing.mediaUrl);
+    }
+
+    const podcast = await Podcast.findByIdAndUpdate(req.params.id, updates, {
+      new: true,
+    });
+    res.json({ podcast });
+  } catch (error) {
+    console.error("Update podcast error:", error);
+    res.status(500).json({ error: "Failed to update podcast" });
+  }
+});
+
+// ── Podcasts: Delete ──
+router.delete("/podcasts/:id", adminAuth, async (req, res) => {
+  try {
+    const podcast = await Podcast.findByIdAndDelete(req.params.id);
+    if (!podcast) return res.status(404).json({ error: "Podcast not found" });
+    deleteCloudinaryFile(podcast.imageUrl);
+    deleteCloudinaryFile(podcast.mediaUrl);
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Delete podcast error:", error);
+    res.status(500).json({ error: "Failed to delete podcast" });
   }
 });
 

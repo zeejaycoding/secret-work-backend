@@ -11,6 +11,7 @@ const MONGO_URI = process.env.MONGO_URI || "mongodb://localhost:27017/secretwork
 const Drill = require("../src/models/Drill");
 const Category = require("../src/models/Category");
 const Program = require("../src/models/Program");
+const Podcast = require("../src/models/Podcast");
 
 const CATEGORIES = [
   { name: "Dribbling", description: "Ball handling and dribbling drills" },
@@ -172,6 +173,81 @@ const SAMPLE_DRILLS = [
   },
 ];
 
+const SAMPLE_PODCASTS = [
+  {
+    title: "Episode 45 – Ball Handling Basics",
+    host: "Coach Adams",
+    type: "Video",
+    date: "Jul 28, 2026",
+    plays: 18200,
+    completion: 84,
+    status: "Published",
+    duration: "22 min",
+    description:
+      "A breakdown of core ball handling fundamentals — dribbling under pressure, change of pace, and protecting the rock against aggressive defenders.",
+  },
+  {
+    title: "Episode 44 – Defense Wins Games",
+    host: "Coach Marcus",
+    type: "Audio",
+    date: "Jul 21, 2026",
+    plays: 12400,
+    completion: 71,
+    status: "Published",
+    duration: "18 min",
+    description:
+      "Coach Marcus walks through defensive stance, sliding mechanics, and how to read offensive tendencies to stay a step ahead.",
+  },
+  {
+    title: "Episode 43 – Shooting Mechanics",
+    host: "Coach Rivera",
+    type: "Video",
+    date: "Jul 14, 2026",
+    plays: 15800,
+    completion: 63,
+    status: "Published",
+    duration: "25 min",
+    description:
+      "Coach Rivera breaks down the perfect shooting motion — footwork, release point, and follow-through for a more consistent jumper.",
+  },
+  {
+    title: "Episode 42 – Recovery & Mobility",
+    host: "Coach Lee",
+    type: "Audio",
+    date: "Jul 7, 2026",
+    plays: 9100,
+    completion: 55,
+    status: "Published",
+    duration: "20 min",
+    description:
+      "Practical recovery routines and mobility drills to keep players fresh and injury-free through a long season.",
+  },
+  {
+    title: "Episode 41 – Transition Offense",
+    host: "Coach Adams",
+    type: "Video",
+    date: "Jun 30, 2026",
+    plays: 11300,
+    completion: 46,
+    status: "Scheduled",
+    duration: "19 min",
+    description:
+      "How to push the pace and create easy looks in transition before the defense can get set.",
+  },
+  {
+    title: "Episode 40 – Strength Training",
+    host: "Coach Marcus",
+    type: "Audio",
+    date: "Jun 23, 2026",
+    plays: 7600,
+    completion: 49,
+    status: "Scheduled",
+    duration: "24 min",
+    description:
+      "A gym session focused on basketball-specific strength and power development for in-season athletes.",
+  },
+];
+
 async function seed() {
   try {
     await mongoose.connect(MONGO_URI);
@@ -234,6 +310,15 @@ async function seed() {
       console.log("Seeded 2 programs.");
     } else {
       console.log(`Programs already seeded (${progCount}).`);
+    }
+
+    // Seed podcasts
+    const podcastCount = await Podcast.countDocuments();
+    if (podcastCount === 0) {
+      await Podcast.insertMany(SAMPLE_PODCASTS);
+      console.log(`Seeded ${SAMPLE_PODCASTS.length} podcasts.`);
+    } else {
+      console.log(`Podcasts already seeded (${podcastCount}).`);
     }
 
     await mongoose.disconnect();

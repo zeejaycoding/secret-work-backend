@@ -3,6 +3,8 @@ const bcrypt = require("bcryptjs");
 const { User } = require("../models/User");
 const { authMiddleware } = require("../middleware/auth");
 const Pro = require("../models/Pro");
+const Drill = require("../models/Drill");
+const Program = require("../models/Program");
 
 const router = Router();
 
@@ -93,6 +95,69 @@ router.post("/onboarding/complete", async (req, res) => {
   } catch (error) {
     console.error("Complete onboarding error:", error);
     res.status(500).json({ error: "Failed to complete onboarding" });
+  }
+});
+
+// ── Drill Completion History ──
+router.post("/progress/completed-drills", async (req, res) => {
+  try {
+    const { drillId } = req.body;
+    if (!drillId) {
+      return res.status(400).json({ error: "drillId is required" });
+    }
+
+    const drill = await Drill.findById(drillId);
+    if (!drill) {
+      return res.status(404).json({ error: "Drill not found" });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.auth.userId,
+      { $addToSet: { completedDrills: drillId } },
+      { new: true }
+    );
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    res.json({ success: true, completedDrills: user.completedDrills });
+  } catch (error) {
+    console.error("Record drill completion error:", error);
+    res.status(500).json({ error: "Failed to record drill completion" });
+  }
+});
+
+// ── Program Enrollment ──
+router.post("/programs/enroll", async (req, res) => {
+  try {
+    const { programId } = req.body;
+    if (!programId) {
+      return res.status(400).json({ error: "programId is required" });
+    }
+
+    const program = await Program.findById(programId);
+    if (!program) {
+      return res.status(404).json({ error: "Program not found" });
+    }
+
+    const user = await User.findById(req.auth.userId);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const alreadyEnrolled = user.enrolledPrograms.some(
+      (p) => String(p) === String(programId)
+    );
+    if (!alreadyEnrolled) {
+      user.enrolledPrograms.push(programId);
+      await user.save();
+      await Program.updateOne({ _id: programId }, { $inc: { enrolled: 1 } });
+    }
+
+    res.json({ success: true, enrolledPrograms: user.enrolledPrograms });
+  } catch (error) {
+    console.error("Enroll in program error:", error);
+    res.status(500).json({ error: "Failed to enroll in program" });
   }
 });
 

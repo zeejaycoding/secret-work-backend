@@ -17,21 +17,46 @@ const storage = new CloudinaryStorage({
     const folder =
       field === "image"
         ? "pros"
+        : field === "media"
+        ? "podcasts/media"
         : isVideo
         ? "drills/videos"
         : "drills/thumbnails";
+    const videoFormats = ["mp4", "mov", "m4v", "webm", "avi", "mkv"];
+    const imageFormats = ["jpg", "jpeg", "png", "webp", "gif"];
+    const mediaFormats = [
+      ...videoFormats,
+      "mp3",
+      "wav",
+      "m4a",
+      "aac",
+      "ogg",
+    ];
+    const formats =
+      field === "media"
+        ? mediaFormats
+        : isVideo
+        ? videoFormats
+        : imageFormats;
     return {
       folder,
-      resource_type: isVideo ? "video" : "image",
-      allowed_formats: isVideo
-        ? ["mp4", "mov", "m4v", "webm", "avi", "mkv"]
-        : ["jpg", "jpeg", "png", "webp", "gif"],
+      resource_type: field === "image" ? "image" : "video",
+      allowed_formats: formats,
       public_id: `${Date.now()}-${Math.round(Math.random() * 1e9)}`,
     };
   },
 });
 
 function fileFilter(req, file, cb) {
+  if (file.fieldname === "media") {
+    if (
+      file.mimetype.startsWith("video/") ||
+      file.mimetype.startsWith("audio/")
+    ) {
+      return cb(null, true);
+    }
+    return cb(new Error("Podcast media must be a video or audio file"));
+  }
   if (file.fieldname === "video") {
     if (file.mimetype.startsWith("video/")) return cb(null, true);
     return cb(new Error("Drill video must be a video file"));
@@ -65,7 +90,8 @@ function deleteCloudinaryFile(url) {
   const publicId = cloudinaryPublicIdFromUrl(url);
   if (!publicId) return;
   const resourceType =
-    url.includes("/video/") || /\.(mp4|mov|webm|mkv|avi|m4v)$/i.test(url)
+    url.includes("/video/") ||
+    /\.(mp4|mov|webm|mkv|avi|m4v|mp3|wav|m4a|aac|ogg)$/i.test(url)
       ? "video"
       : "image";
   cloudinary.uploader
