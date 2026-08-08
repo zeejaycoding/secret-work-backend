@@ -3,6 +3,8 @@ const mongoose = require("mongoose");
 const programSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
+    coach: { type: String, trim: true, default: "" },
+    coachId: { type: mongoose.Schema.Types.ObjectId, ref: "Pro" },
     description: { type: String, default: "" },
     level: {
       type: String,

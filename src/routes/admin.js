@@ -736,7 +736,7 @@ router.get("/programs/:id", adminAuth, async (req, res) => {
 // ── Programs: Create ──
 router.post("/programs", adminAuth, async (req, res) => {
   try {
-    const { name, level, category, duration } = req.body;
+    const { name, coach, coachId, level, category, duration, description, imageUrl, status } = req.body;
     if (!name || !name.trim()) {
       return res.status(400).json({ error: "Program name is required" });
     }
@@ -745,9 +745,14 @@ router.post("/programs", adminAuth, async (req, res) => {
     const drills = allDrills.map((d, i) => ({ drill: d._id, order: i + 1 }));
     const program = await Program.create({
       name: name.trim(),
+      coach: coach || "",
+      coachId: coachId || undefined,
       level: level || "Beginner",
       category: cat,
       duration: duration || "4 weeks",
+      description: description || "",
+      imageUrl: imageUrl || "",
+      status: status || "published",
       drills,
     });
     const populated = await Program.findById(program._id).populate("drills.drill");
