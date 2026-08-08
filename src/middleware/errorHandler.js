@@ -15,6 +15,16 @@ function errorHandler(err, req, res, _next) {
 
   const detail = err && (err.message || String(err));
   if (detail && detail !== "[object Object]") {
+    const sizeMatch = String(detail).match(
+      /File size too large\. Got (\d+)\. Maximum is (\d+)\./
+    );
+    if (sizeMatch) {
+      const gotMB = (Number(sizeMatch[1]) / (1024 * 1024)).toFixed(1);
+      const maxMB = Math.round(Number(sizeMatch[2]) / (1024 * 1024));
+      return res.status(413).json({
+        error: `File is too large (${gotMB} MB). Cloudinary allows at most ${maxMB} MB for thumbnails — use a smaller or compressed image.`,
+      });
+    }
     return res.status(500).json({ error: String(detail).slice(0, 300) });
   }
 
