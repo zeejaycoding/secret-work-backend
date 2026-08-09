@@ -6,6 +6,7 @@ const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const { env } = require("./config/env");
 const { connectDB } = require("./config/db");
+const { DEFAULT_PLANS } = require("./config/plans");
 const { initSocket } = require("./socket");
 const authRoutes = require("./routes/auth");
 const userRoutes = require("./routes/user");
@@ -14,6 +15,8 @@ const adminRoutes = require("./routes/admin");
 const podcastRoutes = require("./routes/podcast");
 const drillRoutes = require("./routes/drill");
 const workoutRoutes = require("./routes/workout");
+const planRoutes = require("./routes/plans");
+const Plan = require("./models/Plan");
 
 const app = express();
 const httpServer = createServer(app);
@@ -65,6 +68,7 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/podcasts", podcastRoutes);
 app.use("/api/drills", drillRoutes);
 app.use("/api/workouts", workoutRoutes);
+app.use("/api/plans", planRoutes);
 
 app.get("/payment-success", (_req, res) => {
   res.send(`<!DOCTYPE html><html><head><title>Payment Successful</title><style>body{background:#000;color:#fff;font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}div{text-align:center}h1{color:#E50914}p{color:#aaa}</style></head><body><div><h1>Payment Successful!</h1><p>You can close this tab and return to the app.</p><p>Your subscription will be activated automatically.</p></div></body></html>`);
@@ -83,8 +87,19 @@ app.use(errorHandler);
 
 initSocket(httpServer);
 
+async function seedPlans() {
+  for (const key of Object.keys(DEFAULT_PLANS)) {
+    await Plan.findOneAndUpdate(
+      { key },
+      { $setOnInsert: DEFAULT_PLANS[key] },
+      { upsert: true }
+    );
+  }
+}
+
 async function start() {
   await connectDB();
+  await seedPlans();
 
   httpServer.listen(env.port, () => {
     console.log(`Server running on port ${env.port} in ${env.nodeEnv} mode`);

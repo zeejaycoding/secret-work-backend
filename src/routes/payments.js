@@ -2,6 +2,7 @@ const express = require("express");
 const { Router } = require("express");
 const Stripe = require("stripe");
 const { User } = require("../models/User");
+const Plan = require("../models/Plan");
 const { env } = require("../config/env");
 const { authMiddleware } = require("../middleware/auth");
 const { upsertTransaction } = require("../services/transactions");
@@ -12,6 +13,21 @@ const PLAN_PRICES = {
   monthly: { amount: 950, interval: "month", label: "Monthly Pro" },
   annually: { amount: 7900, interval: "year", label: "Annual Pro" },
 };
+
+// Read the current price/interval/label for a checkout plan from the DB,
+// falling back to the static defaults when not configured yet.
+async function getPlanConfig(key) {
+  const planKey = key === "annually" ? "annual" : "monthly";
+  const doc = await Plan.findOne({ key: planKey });
+  if (doc && doc.price && Number(doc.price.amount) > 0) {
+    return {
+      amount: Math.round(Number(doc.price.amount) * 100),
+      interval: doc.price.interval || PLAN_PRICES[key].interval,
+      label: doc.label || PLAN_PRICES[key].label,
+    };
+  }
+  return PLAN_PRICES[key];
+}
 
 // Map Stripe/plan interval values to our billingInterval field
 function toBillingInterval(value) {
@@ -79,7 +95,7 @@ checkoutRouter.post("/checkout", authMiddleware, async (req, res) => {
       return;
     }
 
-    const selectedPlan = PLAN_PRICES[plan];
+    const selectedPlan = await getPlanConfig(plan);
 
     let customerId = user.stripeCustomerId;
 

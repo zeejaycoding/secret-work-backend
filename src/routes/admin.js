@@ -11,7 +11,8 @@ const Category = require("../models/Category");
 const Program = require("../models/Program");
 const Pro = require("../models/Pro");
 const Podcast = require("../models/Podcast");
-const Transaction = require("../models/Transaction");
+const Plan = require("../models/Plan");
+const { DEFAULT_PLANS, formatPriceLabel } = require("../config/plans");
 const { transcribePodcast } = require("../services/transcribe");
 const {
   sendPasswordResetEmail,
@@ -353,51 +354,11 @@ router.get("/subscriptions", adminAuth, async (req, res) => {
 router.get("/plans/:key", adminAuth, async (req, res) => {
   try {
     const key = String(req.params.key || "").toLowerCase();
-    const plans = {
-      free: {
-        key: "free",
-        label: "Free",
-        price: { amount: 0, interval: "", label: "$0" },
-        description: "Pricing, benefits and revenue.",
-        benefits: [
-          "Access to Free Drills",
-          "Track Your Progress",
-          "Basic Profile",
-        ],
-      },
-      monthly: {
-        key: "monthly",
-        label: "Monthly Pro",
-        price: { amount: 9.5, interval: "month", label: "$9.50/mo" },
-        description: "Pricing, benefits and revenue.",
-        benefits: [
-          "Unlimited Access to All Drills",
-          "Structured Workouts That Actually Improve You",
-          "Learn From Real Game Situations",
-          "Faster Progress With Guided Sessions",
-          "New Drills Added Regularly",
-        ],
-      },
-      annual: {
-        key: "annual",
-        label: "Annual Pro",
-        price: { amount: 79, interval: "year", label: "$79/yr" },
-        description: "Pricing, benefits and revenue.",
-        benefits: [
-          "Unlimited Access to All Drills",
-          "Structured Workouts That Actually Improve You",
-          "Learn From Real Game Situations",
-          "Faster Progress With Guided Sessions",
-          "New Drills Added Regularly",
-          "Best Value — Save With Annual Billing",
-        ],
-      },
-    };
-
-    const plan = plans[key];
-    if (!plan) {
+    if (!DEFAULT_PLANS[key]) {
       return res.status(404).json({ error: "Plan not found" });
     }
+
+    const doc = (await Plan.findOne({ key })) || DEFAULT_PLANS[key];
 
     let activeUsers = 0;
     if (key === "free") {
@@ -428,7 +389,17 @@ router.get("/plans/:key", adminAuth, async (req, res) => {
 
     res.json({
       plan: {
-        ...plan,
+        key: doc.key,
+        label: doc.label,
+        price: {
+          amount: Number(doc.price?.amount) || 0,
+          interval: doc.price?.interval || "",
+          label: formatPriceLabel(doc.price),
+        },
+        benefits: (doc.benefits || []).map((b) => ({
+          text: b.text,
+          enabled: !!b.enabled,
+        })),
         activeUsers,
         revenue: Math.round(revenue * 100) / 100,
       },
@@ -436,6 +407,72 @@ router.get("/plans/:key", adminAuth, async (req, res) => {
   } catch (error) {
     console.error("Plan detail error:", error);
     res.status(500).json({ error: "Failed to fetch plan" });
+  }
+});
+
+// ── Plan Detail: Update (price, interval, label, benefits) ──
+router.put("/plans/:key", adminAuth, async (req, res) => {
+  try {
+    const key = String(req.params.key || "").toLowerCase();
+    if (!DEFAULT_PLANS[key]) {
+      return res.status(404).json({ error: "Plan not found" });
+    }
+
+    const updates = {};
+    if (req.body.label !== undefined) {
+      updates.label = String(req.body.label).trim();
+    }
+    if (req.body.price !== undefined) {
+      const price = req.body.price || {};
+      const amount = Number(price.amount);
+      if (Number.isFinite(amount) && amount >= 0) {
+        const interval = price.interval;
+        updates.price = {
+          amount: Math.round(amount * 100) / 100,
+          interval:
+            interval === "year"
+              ? "year"
+              : interval === "month"
+                ? "month"
+                : "",
+        };
+      }
+    }
+    if (Array.isArray(req.body.benefits)) {
+      updates.benefits = req.body.benefits.map((b) => ({
+        text: String(b.text || "").trim() || "Benefit",
+        enabled: !!b.enabled,
+      }));
+    }
+
+    let plan = await Plan.findOne({ key });
+    if (!plan) {
+      plan = await Plan.create({ ...DEFAULT_PLANS[key], ...updates });
+    } else {
+      for (const field of Object.keys(updates)) {
+        plan[field] = updates[field];
+      }
+      await plan.save();
+    }
+
+    res.json({
+      plan: {
+        key: plan.key,
+        label: plan.label,
+        price: {
+          amount: Number(plan.price?.amount) || 0,
+          interval: plan.price?.interval || "",
+          label: formatPriceLabel(plan.price),
+        },
+        benefits: (plan.benefits || []).map((b) => ({
+          text: b.text,
+          enabled: !!b.enabled,
+        })),
+      },
+    });
+  } catch (error) {
+    console.error("Update plan error:", error);
+    res.status(500).json({ error: "Failed to update plan" });
   }
 });
 
