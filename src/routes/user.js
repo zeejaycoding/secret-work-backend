@@ -5,6 +5,7 @@ const { authMiddleware } = require("../middleware/auth");
 const Pro = require("../models/Pro");
 const Drill = require("../models/Drill");
 const Program = require("../models/Program");
+const Follow = require("../models/Follow");
 
 const router = Router();
 
@@ -95,6 +96,49 @@ router.post("/onboarding/complete", async (req, res) => {
   } catch (error) {
     console.error("Complete onboarding error:", error);
     res.status(500).json({ error: "Failed to complete onboarding" });
+  }
+});
+
+// ── Follow a coach (by coach name) ──
+router.post("/follows", async (req, res) => {
+  try {
+    const coach = String(req.body.coach || "").trim();
+    if (!coach) {
+      return res.status(400).json({ error: "coach is required" });
+    }
+
+    const existing = await Follow.findOne({ user: req.auth.userId, coach });
+    let following;
+    if (existing) {
+      await Follow.deleteOne({ _id: existing._id });
+      following = false;
+    } else {
+      await Follow.create({ user: req.auth.userId, coach });
+      following = true;
+    }
+
+    const followers = await Follow.countDocuments({ coach });
+    res.json({ success: true, following, followers });
+  } catch (error) {
+    console.error("Toggle follow error:", error);
+    res.status(500).json({ error: "Failed to toggle follow" });
+  }
+});
+
+// ── Follow status for a coach ──
+router.get("/follows/status", async (req, res) => {
+  try {
+    const coach = String(req.query.coach || "").trim();
+    if (!coach) {
+      return res.status(400).json({ error: "coach is required" });
+    }
+
+    const existing = await Follow.findOne({ user: req.auth.userId, coach });
+    const followers = await Follow.countDocuments({ coach });
+    res.json({ following: !!existing, followers });
+  } catch (error) {
+    console.error("Follow status error:", error);
+    res.status(500).json({ error: "Failed to fetch follow status" });
   }
 });
 

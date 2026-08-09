@@ -1,6 +1,7 @@
 const { Router } = require("express");
 const Drill = require("../models/Drill");
 const Pro = require("../models/Pro");
+const Follow = require("../models/Follow");
 
 const router = Router();
 
@@ -118,8 +119,10 @@ router.get("/:id", async (req, res) => {
       return res.status(404).json({ error: "Workout not found" });
     }
 
+    const followers = await Follow.countDocuments({ coach });
+
     const stats = {
-      followers: pro ? `${pro.sessions || 0}k` : "12k",
+      followers,
       videos: drills.length,
       yearsExp: 10,
     };
