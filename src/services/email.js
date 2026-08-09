@@ -158,4 +158,76 @@ async function sendPasswordResetEmail({ toEmail, otpCode }) {
   }
 }
 
-module.exports = { sendPasswordResetEmail };
+async function sendNotificationEmail({ toEmail, title, message }) {
+  ensureEmailConfigured();
+
+  const msg = {
+    to: toEmail,
+    from: { email: env.emailFrom, name: "Secret Work" },
+    replyTo: { email: env.emailFrom, name: "Secret Work" },
+    subject: title,
+    text: message,
+    html: `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+</head>
+<body style="margin:0;padding:0;background-color:#F4F4F5;font-family:Arial,Helvetica,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#F4F4F5;padding:40px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="520" cellpadding="0" cellspacing="0" style="max-width:520px;width:100%;">
+          <tr>
+            <td align="center" style="padding-bottom:24px;">
+              <table role="presentation" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="width:48px;height:48px;border-radius:24px;background-color:#E50914;text-align:center;vertical-align:middle;">
+                    <span style="color:#fff;font-size:20px;font-weight:700;line-height:48px;display:inline-block;font-family:Arial,sans-serif;">SW</span>
+                  </td>
+                  <td style="padding-left:12px;">
+                    <span style="color:#1A1A1A;font-size:20px;font-weight:700;font-family:Arial,sans-serif;">Secret Work</span>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="background-color:#FFFFFF;border-radius:12px;padding:36px 32px;border:1px solid #E5E5E5;">
+              <h1 style="margin:0 0 12px 0;color:#1A1A1A;font-size:20px;font-weight:700;font-family:Arial,sans-serif;">${title}</h1>
+              <p style="margin:0;color:#525252;font-size:15px;line-height:1.6;font-family:Arial,sans-serif;white-space:pre-line;">${message}</p>
+            </td>
+          </tr>
+          <tr>
+            <td align="center" style="padding-top:24px;padding-bottom:16px;">
+              <p style="margin:0;color:#A1A1AA;font-size:12px;line-height:1.6;font-family:Arial,sans-serif;">
+                This is a notification sent by Secret Work.
+              </p>
+              <p style="margin:4px 0 0 0;color:#D4D4D8;font-size:11px;font-family:Arial,sans-serif;">
+                Secret Work | secret-work-backend.onrender.com
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`,
+    headers: {
+      "List-Unsubscribe": `<mailto:${env.emailFrom}?subject=unsubscribe>`,
+      "X-Mailer": "SecretWork",
+    },
+  };
+
+  try {
+    const [response] = await sgMail.send(msg);
+    console.log("SendGrid notification sent to:", toEmail, "Status:", response.statusCode);
+  } catch (err) {
+    const sgError = err?.response?.body?.errors?.[0]?.message || err.message || err;
+    console.error("SendGrid notification error:", sgError);
+    throw new Error(`Email send failed: ${sgError}`);
+  }
+}
+
+module.exports = { sendPasswordResetEmail, sendNotificationEmail };

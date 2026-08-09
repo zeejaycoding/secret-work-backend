@@ -17,6 +17,8 @@ const drillRoutes = require("./routes/drill");
 const workoutRoutes = require("./routes/workout");
 const planRoutes = require("./routes/plans");
 const Plan = require("./models/Plan");
+const Notification = require("./models/Notification");
+const { deliverCampaign } = require("./services/notifications");
 
 const app = express();
 const httpServer = createServer(app);
@@ -108,6 +110,28 @@ async function seedPlans() {
   }
 }
 
+async function processScheduledNotifications() {
+  try {
+    const due = await Notification.find({
+      status: "scheduled",
+      scheduledAt: { $lte: new Date() },
+    });
+    for (const campaign of due) {
+      try {
+        console.log(`Sending scheduled notification: ${campaign.title}`);
+        await deliverCampaign(campaign);
+      } catch (error) {
+        console.error("Scheduled notification failed:", error);
+        campaign.status = "failed";
+        campaign.error = error.message || "Delivery failed";
+        await campaign.save().catch(() => {});
+      }
+    }
+  } catch (error) {
+    console.error("Scheduled notifications scan error:", error);
+  }
+}
+
 async function start() {
   await connectDB();
   await seedPlans();
@@ -115,6 +139,10 @@ async function start() {
   httpServer.listen(env.port, () => {
     console.log(`Server running on port ${env.port} in ${env.nodeEnv} mode`);
   });
+
+  // Fire due scheduled notifications every minute.
+  processScheduledNotifications();
+  setInterval(processScheduledNotifications, 60 * 1000);
 }
 
 start().catch(console.error);

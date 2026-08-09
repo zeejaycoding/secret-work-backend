@@ -14,8 +14,15 @@ const Podcast = require("../models/Podcast");
 const Transaction = require("../models/Transaction");
 const Activity = require("../models/Activity");
 const Plan = require("../models/Plan");
+const Notification = require("../models/Notification");
 const { DEFAULT_PLANS, formatPriceLabel } = require("../config/plans");
 const { transcribePodcast } = require("../services/transcribe");
+const {
+  deliverCampaign,
+  targetCount,
+  CHANNELS,
+  AUDIENCES,
+} = require("../services/notifications");
 const {
   sendPasswordResetEmail,
 } = require("../services/email");
@@ -1356,6 +1363,115 @@ router.delete("/podcasts/:id", adminAuth, async (req, res) => {
   } catch (error) {
     console.error("Delete podcast error:", error);
     res.status(500).json({ error: "Failed to delete podcast" });
+  }
+});
+
+// ── Notifications ──
+router.get("/notifications", adminAuth, async (req, res) => {
+  try {
+    const notifications = await Notification.find()
+      .sort({ createdAt: -1 })
+      .limit(200);
+    res.json({ notifications });
+  } catch (error) {
+    console.error("List notifications error:", error);
+    res.status(500).json({ error: "Failed to fetch notifications" });
+  }
+});
+
+router.post("/notifications", adminAuth, async (req, res) => {
+  try {
+    const { channel, audience, title, message, status = "sent", scheduledAt } =
+      req.body || {};
+
+    const channelKey = String(channel || "").toLowerCase();
+    const audienceKey = String(audience || "").toLowerCase();
+
+    if (!channelKey || !audienceKey || !title || !message) {
+      return res
+        .status(400)
+        .json({ error: "Channel, audience, title and message are required" });
+    }
+    if (!CHANNELS.includes(channelKey)) {
+      return res.status(400).json({ error: "Invalid channel" });
+    }
+    if (!AUDIENCES.includes(audienceKey)) {
+      return res.status(400).json({ error: "Invalid audience" });
+    }
+
+    const mode = String(status || "sent").toLowerCase();
+    let reach = 0;
+    try {
+      reach = await targetCount(audienceKey);
+    } catch (err) {
+      console.error("Target count error:", err.message);
+    }
+
+    const base = {
+      channel: channelKey,
+      audience: audienceKey,
+      title: String(title).trim(),
+      message: String(message).trim(),
+      reach,
+      createdBy: req.admin.email || "",
+    };
+
+    if (mode === "draft") {
+      const notification = await Notification.create({ ...base, status: "draft" });
+      return res.status(201).json({ notification });
+    }
+
+    if (mode === "scheduled") {
+      if (!scheduledAt) {
+        return res
+          .status(400)
+          .json({ error: "scheduledAt is required for scheduled notifications" });
+      }
+      const when = new Date(scheduledAt);
+      if (isNaN(when.getTime())) {
+        return res.status(400).json({ error: "Invalid scheduledAt" });
+      }
+      const notification = await Notification.create({
+        ...base,
+        status: "scheduled",
+        scheduledAt: when,
+      });
+      return res.status(201).json({ notification });
+    }
+
+    const notification = await Notification.create({ ...base, status: "sent" });
+    const delivered = await deliverCampaign(notification);
+    return res.status(201).json({ notification: delivered });
+  } catch (error) {
+    console.error("Create notification error:", error);
+    res.status(500).json({ error: "Failed to create notification" });
+  }
+});
+
+router.post("/notifications/:id/send", adminAuth, async (req, res) => {
+  try {
+    const notification = await Notification.findById(req.params.id);
+    if (!notification) {
+      return res.status(404).json({ error: "Notification not found" });
+    }
+    const delivered = await deliverCampaign(notification);
+    res.json({ notification: delivered });
+  } catch (error) {
+    console.error("Send notification error:", error);
+    res.status(500).json({ error: "Failed to send notification" });
+  }
+});
+
+router.delete("/notifications/:id", adminAuth, async (req, res) => {
+  try {
+    const notification = await Notification.findByIdAndDelete(req.params.id);
+    if (!notification) {
+      return res.status(404).json({ error: "Notification not found" });
+    }
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Delete notification error:", error);
+    res.status(500).json({ error: "Failed to delete notification" });
   }
 });
 

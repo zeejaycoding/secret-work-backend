@@ -6,6 +6,7 @@ const Pro = require("../models/Pro");
 const Drill = require("../models/Drill");
 const Program = require("../models/Program");
 const Follow = require("../models/Follow");
+const UserNotification = require("../models/UserNotification");
 const { recordActivity } = require("../services/activity");
 
 const router = Router();
@@ -97,6 +98,63 @@ router.post("/onboarding/complete", async (req, res) => {
   } catch (error) {
     console.error("Complete onboarding error:", error);
     res.status(500).json({ error: "Failed to complete onboarding" });
+  }
+});
+
+// ── User Preferences (app preferences + playback settings) ──
+router.get("/preferences", async (req, res) => {
+  try {
+    const user = await User.findById(req.auth.userId).select("preferences");
+
+    if (!user) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    res.json({ preferences: user.preferences || {} });
+  } catch (error) {
+    console.error("Get preferences error:", error);
+    res.status(500).json({ error: "Failed to fetch preferences" });
+  }
+});
+
+router.patch("/preferences", async (req, res) => {
+  try {
+    const allowedFields = [
+      "darkMode",
+      "language",
+      "autoplayVideos",
+      "dataSaver",
+      "videoQuality",
+      "notifications",
+    ];
+
+    const updates = {};
+    for (const field of allowedFields) {
+      if (req.body[field] !== undefined) {
+        updates[`preferences.${field}`] = req.body[field];
+      }
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: "No valid preference fields provided" });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.auth.userId,
+      { $set: updates },
+      { new: true, runValidators: true }
+    ).select("preferences");
+
+    if (!user) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    res.json({ preferences: user.preferences });
+  } catch (error) {
+    console.error("Update preferences error:", error);
+    res.status(500).json({ error: "Failed to update preferences" });
   }
 });
 
@@ -326,6 +384,102 @@ router.post("/password/change", async (req, res) => {
   } catch (error) {
     console.error("Change password error:", error);
     res.status(500).json({ error: "Failed to change password" });
+  }
+});
+
+// ── Notifications ──
+router.get("/notifications", async (req, res) => {
+  try {
+    const notifications = await UserNotification.find({ userId: req.auth.userId })
+      .sort({ createdAt: -1 })
+      .limit(50);
+    res.json({ notifications });
+  } catch (error) {
+    console.error("List user notifications error:", error);
+    res.status(500).json({ error: "Failed to fetch notifications" });
+  }
+});
+
+router.get("/notifications/unread-count", async (req, res) => {
+  try {
+    const count = await UserNotification.countDocuments({
+      userId: req.auth.userId,
+      read: false,
+    });
+    res.json({ count });
+  } catch (error) {
+    console.error("Unread count error:", error);
+    res.status(500).json({ error: "Failed to fetch unread count" });
+  }
+});
+
+router.patch("/notifications/:id/read", async (req, res) => {
+  try {
+    await UserNotification.updateOne(
+      { _id: req.params.id, userId: req.auth.userId },
+      { read: true, readAt: new Date() }
+    );
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Mark notification read error:", error);
+    res.status(500).json({ error: "Failed to mark notification read" });
+  }
+});
+
+router.post("/notifications/read-all", async (req, res) => {
+  try {
+    await UserNotification.updateMany(
+      { userId: req.auth.userId, read: false },
+      { read: true, readAt: new Date() }
+    );
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Read all notifications error:", error);
+    res.status(500).json({ error: "Failed to mark notifications read" });
+  }
+});
+
+// ── Push token ──
+router.post("/push-token", async (req, res) => {
+  try {
+    const token = String(req.body?.token || "").trim();
+    if (!token) {
+      return res.status(400).json({ error: "Push token is required" });
+    }
+    await User.updateOne({ _id: req.auth.userId }, { pushToken: token });
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Save push token error:", error);
+    res.status(500).json({ error: "Failed to save push token" });
+  }
+});
+
+// ── Notification preferences ──
+router.get("/notification-prefs", async (req, res) => {
+  try {
+    const user = await User.findById(req.auth.userId).select("notificationPrefs");
+    res.json({
+      prefs: user?.notificationPrefs || { push: true, email: true, inApp: true },
+    });
+  } catch (error) {
+    console.error("Get notification prefs error:", error);
+    res.status(500).json({ error: "Failed to fetch preferences" });
+  }
+});
+
+router.post("/notification-prefs", async (req, res) => {
+  try {
+    const incoming = req.body?.prefs || {};
+    const clean = {
+      push: incoming.push !== false,
+      email: incoming.email !== false,
+      inApp: incoming.inApp !== false,
+    };
+    await User.updateOne({ _id: req.auth.userId }, { notificationPrefs: clean });
+    res.json({ prefs: clean });
+  } catch (error) {
+    console.error("Save notification prefs error:", error);
+    res.status(500).json({ error: "Failed to save preferences" });
   }
 });
 

@@ -56,6 +56,12 @@ const userSchema = new mongoose.Schema(
       },
     ],
     watchTimeSec: { type: Number, default: 0 },
+    pushToken: { type: String, default: "" },
+    notificationPrefs: {
+      push: { type: Boolean, default: true },
+      email: { type: Boolean, default: true },
+      inApp: { type: Boolean, default: true },
+    },
     enrolledPrograms: [
       {
         type: mongoose.Schema.Types.ObjectId,
@@ -69,6 +75,18 @@ const userSchema = new mongoose.Schema(
     passwordResetAttempts: { type: Number, default: 0 },
     passwordResetTokenHash: { type: String },
     passwordResetTokenExpiresAt: { type: Date },
+    preferences: {
+      darkMode: { type: Boolean, default: true },
+      language: { type: String, default: "English" },
+      autoplayVideos: { type: Boolean, default: true },
+      dataSaver: { type: Boolean, default: false },
+      videoQuality: { type: String, default: "Auto Play" },
+      notifications: {
+        push: { type: Boolean, default: true },
+        email: { type: Boolean, default: true },
+        inApp: { type: Boolean, default: true },
+      },
+    },
   },
   { timestamps: true }
 );
