@@ -663,7 +663,9 @@ router.put("/roles/:key", adminAuth, async (req, res) => {
   try {
     const key = String(req.params.key || "");
     const def = DEFAULT_ROLES[key];
-    if (!def) {
+
+    let doc = await Role.findOne({ key });
+    if (!def && !doc) {
       return res.status(404).json({ error: "Role not found" });
     }
 
@@ -675,19 +677,19 @@ router.put("/roles/:key", adminAuth, async (req, res) => {
       updates.users = Math.max(0, Number(req.body.users));
     }
     if (req.body.permissions && typeof req.body.permissions === "object") {
-      const merged = { ...def.permissions, ...(req.body.permissions || {}) };
+      const base = { ...(def?.permissions || {}), ...(doc?.permissions || {}) };
+      const merged = { ...base, ...(req.body.permissions || {}) };
       for (const key of Object.keys(merged)) {
         merged[key] = !!merged[key];
       }
       updates.permissions = merged;
     }
 
-    let doc = await Role.findOne({ key });
     if (!doc) {
       doc = await Role.create({
         key,
         label: updates.label ?? def.label,
-        permissions: updates.permissions ?? def.permissions,
+        permissions: updates.permissions ?? def.permissions ?? {},
         users: updates.users ?? def.users ?? 0,
       });
     } else {
@@ -697,12 +699,15 @@ router.put("/roles/:key", adminAuth, async (req, res) => {
       await doc.save();
     }
 
-    const permissions = { ...def.permissions, ...(doc.permissions || {}) };
+    const permissions = {
+      ...(def?.permissions || {}),
+      ...(doc.permissions || {}),
+    };
     res.json({
       role: {
         key: doc.key,
-        label: doc.label || def.label,
-        users: typeof doc.users === "number" ? doc.users : def.users ?? 0,
+        label: doc.label || def?.label || key,
+        users: typeof doc.users === "number" ? doc.users : def?.users ?? 0,
         granted: Object.values(permissions).filter(Boolean).length,
         total: DEFAULT_PERMISSIONS.length,
         permissions,
