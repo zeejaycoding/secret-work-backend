@@ -214,6 +214,8 @@ router.post("/progress/completed-drills", async (req, res) => {
       return res.status(404).json({ error: "Drill not found" });
     }
 
+    await Drill.updateOne({ _id: drillId }, { $inc: { views: 1 } });
+
     const user = await User.findByIdAndUpdate(
       req.auth.userId,
       { $addToSet: { completedDrills: drillId } },
