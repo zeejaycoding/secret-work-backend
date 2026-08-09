@@ -2,6 +2,7 @@ const { User } = require("../models/User");
 const UserNotification = require("../models/UserNotification");
 const { sendNotificationEmail } = require("./email");
 const { getIO } = require("../socket");
+const { getSettingsDoc, DEFAULT_NOTIFICATIONS } = require("./settings");
 
 const CHANNELS = ["push", "inapp", "email"];
 const AUDIENCES = ["all", "free", "monthly", "pro", "annual", "premium"];
@@ -161,9 +162,34 @@ async function deliverPush(campaign, users) {
   return { delivered, failed, lastError };
 }
 
+async function globalChannelEnabled(channel) {
+  try {
+    const doc = await getSettingsDoc();
+    const prefs = { ...DEFAULT_NOTIFICATIONS, ...(doc.notifications || {}) };
+    if (channel === "inapp") return prefs.inApp !== false;
+    if (channel === "push") return prefs.push !== false;
+    if (channel === "email") return prefs.email !== false;
+    return true;
+  } catch (error) {
+    console.error("Read global notification prefs error:", error.message);
+    return true;
+  }
+}
+
 async function deliverCampaign(campaign) {
   const users = await resolveAudience(campaign.audience);
   campaign.reach = users.length;
+
+  const globallyEnabled = await globalChannelEnabled(campaign.channel);
+  if (!globallyEnabled) {
+    campaign.status = "sent";
+    campaign.sentAt = new Date();
+    campaign.delivered = 0;
+    campaign.failedCount = 0;
+    campaign.error = "Disabled in admin settings";
+    await campaign.save();
+    return campaign;
+  }
 
   let lastError = "";
   if (campaign.channel === "inapp") {

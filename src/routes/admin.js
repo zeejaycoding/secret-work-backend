@@ -16,6 +16,7 @@ const Activity = require("../models/Activity");
 const Plan = require("../models/Plan");
 const Role = require("../models/Role");
 const Notification = require("../models/Notification");
+const Setting = require("../models/Setting");
 const { DEFAULT_PLANS, formatPriceLabel } = require("../config/plans");
 const { DEFAULT_PERMISSIONS, DEFAULT_ROLES } = require("../config/roles");
 const { transcribePodcast } = require("../services/transcribe");
@@ -28,6 +29,11 @@ const {
 const {
   sendPasswordResetEmail,
 } = require("../services/email");
+const {
+  getSettingsDoc,
+  DEFAULT_BRANDING,
+  DEFAULT_NOTIFICATIONS,
+} = require("../services/settings");
 
 const router = Router();
 
@@ -210,7 +216,12 @@ router.get("/dashboard", adminAuth, async (req, res) => {
       { $group: { _id: "$authProvider", count: { $sum: 1 } } },
     ]);
 
+    const startOfYear = new Date();
+    startOfYear.setMonth(0, 1);
+    startOfYear.setHours(0, 0, 0, 0);
+
     const monthlySignups = await User.aggregate([
+      { $match: { createdAt: { $gte: startOfYear } } },
       {
         $group: {
           _id: {
@@ -220,8 +231,7 @@ router.get("/dashboard", adminAuth, async (req, res) => {
           count: { $sum: 1 },
         },
       },
-      { $sort: { "_id.year": 1, "_id.month": 1 } },
-      { $limit: 12 },
+      { $sort: { "_id.month": 1 } },
     ]);
 
     const totalDrills = await Drill.countDocuments();
@@ -229,6 +239,84 @@ router.get("/dashboard", adminAuth, async (req, res) => {
     const totalViews = await Drill.aggregate([
       { $group: { _id: null, total: { $sum: "$views" } } },
     ]);
+
+    const revenueAgg = await Transaction.aggregate([
+      { $match: { status: "success" } },
+      { $group: { _id: null, total: { $sum: "$amount" } } },
+    ]);
+    const revenue = revenueAgg[0]?.total || 0;
+
+    const monthlyRevenue = await Transaction.aggregate([
+      { $match: { status: "success", date: { $gte: startOfYear } } },
+      {
+        $group: {
+          _id: { year: { $year: "$date" }, month: { $month: "$date" } },
+          total: { $sum: "$amount" },
+        },
+      },
+      { $sort: { "_id.month": 1 } },
+    ]);
+
+    const watchTimeAgg = await User.aggregate([
+      { $group: { _id: null, total: { $sum: "$watchTimeSec" } } },
+    ]);
+    const watchTimeHours =
+      Math.round(((watchTimeAgg[0]?.total || 0) / 3600) * 10) / 10;
+
+    const podcastPlaysAgg = await Podcast.aggregate([
+      { $group: { _id: null, total: { $sum: "$plays" } } },
+    ]);
+    const podcastPlays = podcastPlaysAgg[0]?.total || 0;
+
+    const recentActivity = await Activity.aggregate([
+      { $sort: { updatedAt: -1 } },
+      { $limit: 8 },
+      {
+        $lookup: {
+          from: "users",
+          localField: "userId",
+          foreignField: "_id",
+          as: "user",
+        },
+      },
+      { $unwind: { path: "$user", preserveNullAndEmptyArrays: true } },
+      {
+        $project: {
+          kind: 1,
+          date: 1,
+          count: 1,
+          updatedAt: 1,
+          firstName: { $ifNull: ["$user.firstName", ""] },
+          lastName: { $ifNull: ["$user.lastName", ""] },
+          email: { $ifNull: ["$user.email", ""] },
+        },
+      },
+    ]);
+
+    const drillCompletionAgg = await User.aggregate([
+      { $unwind: "$completedDrills" },
+      { $group: { _id: "$completedDrills", count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 5 },
+    ]);
+    const drillDocs = await Drill.find({
+      _id: { $in: drillCompletionAgg.map((d) => d._id) },
+    }).select("title category");
+    const drillById = {};
+    drillDocs.forEach((d) => {
+      drillById[String(d._id)] = d;
+    });
+    const topDrills = drillCompletionAgg.map((d) => {
+      const drill = drillById[String(d._id)];
+      return {
+        title: drill?.title || "Unknown drill",
+        category: drill?.category || "",
+        completions: d.count,
+        progress: totalUsers
+          ? Math.min(100, Math.round((d.count / totalUsers) * 100))
+          : 0,
+      };
+    });
 
     res.json({
       totalUsers,
@@ -238,9 +326,15 @@ router.get("/dashboard", adminAuth, async (req, res) => {
       totalDrills,
       publishedDrills,
       totalViews: totalViews[0]?.total || 0,
+      revenue,
+      monthlyRevenue,
+      watchTimeHours,
+      podcastPlays,
       recentUsers,
       providerCounts,
       monthlySignups,
+      recentActivity,
+      topDrills,
     });
   } catch (error) {
     console.error("Dashboard stats error:", error);
@@ -1713,6 +1807,111 @@ router.delete("/notifications/:id", adminAuth, async (req, res) => {
   } catch (error) {
     console.error("Delete notification error:", error);
     res.status(500).json({ error: "Failed to delete notification" });
+  }
+});
+
+// ── Settings (branding + notification prefs) ──
+router.get("/settings", adminAuth, async (req, res) => {
+  try {
+    const doc = await getSettingsDoc();
+    res.json({
+      branding: {
+        appName: doc.branding?.appName || DEFAULT_BRANDING.appName,
+        tagline: doc.branding?.tagline || DEFAULT_BRANDING.tagline,
+        primaryColor: doc.branding?.primaryColor || DEFAULT_BRANDING.primaryColor,
+        accentColor: doc.branding?.accentColor || DEFAULT_BRANDING.accentColor,
+        displayFont: doc.branding?.displayFont || DEFAULT_BRANDING.displayFont,
+        bodyFont: doc.branding?.bodyFont || DEFAULT_BRANDING.bodyFont,
+        palette:
+          doc.branding?.palette && doc.branding.palette.length
+            ? doc.branding.palette
+            : DEFAULT_BRANDING.palette,
+      },
+      notifications: {
+        ...DEFAULT_NOTIFICATIONS,
+        ...(doc.notifications || {}),
+      },
+    });
+  } catch (error) {
+    console.error("Get settings error:", error);
+    res.status(500).json({ error: "Failed to fetch settings" });
+  }
+});
+
+router.put("/settings", adminAuth, async (req, res) => {
+  try {
+    const { branding, notifications } = req.body || {};
+
+    const doc = await getSettingsDoc();
+
+    if (branding && typeof branding === "object") {
+      const clean = {
+        appName:
+          typeof branding.appName === "string" && branding.appName.trim()
+            ? branding.appName.trim()
+            : doc.branding?.appName || DEFAULT_BRANDING.appName,
+        tagline:
+          typeof branding.tagline === "string"
+            ? branding.tagline.trim()
+            : doc.branding?.tagline || DEFAULT_BRANDING.tagline,
+        primaryColor:
+          typeof branding.primaryColor === "string" && branding.primaryColor.trim()
+            ? branding.primaryColor.trim()
+            : doc.branding?.primaryColor || DEFAULT_BRANDING.primaryColor,
+        accentColor:
+          typeof branding.accentColor === "string" && branding.accentColor.trim()
+            ? branding.accentColor.trim()
+            : doc.branding?.accentColor || DEFAULT_BRANDING.accentColor,
+        displayFont:
+          typeof branding.displayFont === "string" && branding.displayFont.trim()
+            ? branding.displayFont.trim()
+            : doc.branding?.displayFont || DEFAULT_BRANDING.displayFont,
+        bodyFont:
+          typeof branding.bodyFont === "string" && branding.bodyFont.trim()
+            ? branding.bodyFont.trim()
+            : doc.branding?.bodyFont || DEFAULT_BRANDING.bodyFont,
+      };
+      if (Array.isArray(branding.palette) && branding.palette.length) {
+        clean.palette = branding.palette
+          .filter(
+            (c) =>
+              c &&
+              typeof c === "object" &&
+              typeof c.name === "string" &&
+              typeof c.hex === "string"
+          )
+          .map((c) => ({ name: c.name, hex: c.hex }));
+      }
+      doc.branding = { ...(doc.branding || {}), ...clean };
+    }
+
+    if (notifications && typeof notifications === "object") {
+      const clean = {};
+      for (const key of Object.keys(DEFAULT_NOTIFICATIONS)) {
+        if (typeof notifications[key] === "boolean") {
+          clean[key] = notifications[key];
+        }
+      }
+      doc.notifications = { ...(doc.notifications || {}), ...clean };
+    }
+
+    await doc.save();
+
+    res.json({
+      branding: {
+        appName: doc.branding.appName,
+        tagline: doc.branding.tagline,
+        primaryColor: doc.branding.primaryColor,
+        accentColor: doc.branding.accentColor,
+        displayFont: doc.branding.displayFont,
+        bodyFont: doc.branding.bodyFont,
+        palette: doc.branding.palette || [],
+      },
+      notifications: { ...DEFAULT_NOTIFICATIONS, ...doc.notifications },
+    });
+  } catch (error) {
+    console.error("Update settings error:", error);
+    res.status(500).json({ error: "Failed to save settings" });
   }
 });
 
