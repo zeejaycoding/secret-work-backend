@@ -14,8 +14,10 @@ const Podcast = require("../models/Podcast");
 const Transaction = require("../models/Transaction");
 const Activity = require("../models/Activity");
 const Plan = require("../models/Plan");
+const Role = require("../models/Role");
 const Notification = require("../models/Notification");
 const { DEFAULT_PLANS, formatPriceLabel } = require("../config/plans");
+const { DEFAULT_PERMISSIONS, DEFAULT_ROLES } = require("../config/roles");
 const { transcribePodcast } = require("../services/transcribe");
 const {
   deliverCampaign,
@@ -600,6 +602,161 @@ router.get("/analytics", adminAuth, async (req, res) => {
   } catch (error) {
     console.error("Analytics stats error:", error);
     res.status(500).json({ error: "Failed to fetch analytics" });
+  }
+});
+
+// ── Roles & Permissions: List ──
+router.get("/roles", adminAuth, async (req, res) => {
+  try {
+    const roles = [];
+
+    for (const key of Object.keys(DEFAULT_ROLES)) {
+      const def = DEFAULT_ROLES[key];
+      const doc = await Role.findOne({ key });
+
+      let users = def.users ?? 0;
+      if (key === "coach") {
+        users = await User.countDocuments({ role: "coach" });
+      } else if (key === "member") {
+        users = await User.countDocuments({ role: "member" });
+      } else if (doc && typeof doc.users === "number") {
+        users = doc.users;
+      }
+
+      const permissions = { ...def.permissions, ...(doc?.permissions || {}) };
+      roles.push({
+        key,
+        label: doc?.label || def.label,
+        users,
+        granted: Object.values(permissions).filter(Boolean).length,
+        total: DEFAULT_PERMISSIONS.length,
+        permissions,
+      });
+    }
+
+    // Custom roles created via POST /roles
+    const custom = await Role.find({ key: { $nin: Object.keys(DEFAULT_ROLES) } });
+    for (const c of custom) {
+      const permissions = c.permissions || {};
+      roles.push({
+        key: c.key,
+        label: c.label || c.key,
+        users: typeof c.users === "number" ? c.users : 0,
+        granted: Object.values(permissions).filter(Boolean).length,
+        total: DEFAULT_PERMISSIONS.length,
+        permissions,
+      });
+    }
+
+    res.json({
+      permissions: DEFAULT_PERMISSIONS,
+      roles,
+    });
+  } catch (error) {
+    console.error("Roles error:", error);
+    res.status(500).json({ error: "Failed to fetch roles" });
+  }
+});
+
+// ── Roles & Permissions: Update ──
+router.put("/roles/:key", adminAuth, async (req, res) => {
+  try {
+    const key = String(req.params.key || "");
+    const def = DEFAULT_ROLES[key];
+    if (!def) {
+      return res.status(404).json({ error: "Role not found" });
+    }
+
+    const updates = {};
+    if (req.body.label !== undefined) {
+      updates.label = String(req.body.label).trim();
+    }
+    if (req.body.users !== undefined && Number.isFinite(Number(req.body.users))) {
+      updates.users = Math.max(0, Number(req.body.users));
+    }
+    if (req.body.permissions && typeof req.body.permissions === "object") {
+      const merged = { ...def.permissions, ...(req.body.permissions || {}) };
+      for (const key of Object.keys(merged)) {
+        merged[key] = !!merged[key];
+      }
+      updates.permissions = merged;
+    }
+
+    let doc = await Role.findOne({ key });
+    if (!doc) {
+      doc = await Role.create({
+        key,
+        label: updates.label ?? def.label,
+        permissions: updates.permissions ?? def.permissions,
+        users: updates.users ?? def.users ?? 0,
+      });
+    } else {
+      for (const field of Object.keys(updates)) {
+        doc[field] = updates[field];
+      }
+      await doc.save();
+    }
+
+    const permissions = { ...def.permissions, ...(doc.permissions || {}) };
+    res.json({
+      role: {
+        key: doc.key,
+        label: doc.label || def.label,
+        users: typeof doc.users === "number" ? doc.users : def.users ?? 0,
+        granted: Object.values(permissions).filter(Boolean).length,
+        total: DEFAULT_PERMISSIONS.length,
+        permissions,
+      },
+    });
+  } catch (error) {
+    console.error("Update role error:", error);
+    res.status(500).json({ error: "Failed to update role" });
+  }
+});
+
+// ── Roles & Permissions: Create ──
+router.post("/roles", adminAuth, async (req, res) => {
+  try {
+    const label = String(req.body.label || "").trim();
+    if (!label) {
+      return res.status(400).json({ error: "Role name is required" });
+    }
+
+    const key = label
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 40);
+
+    if (!key) {
+      return res.status(400).json({ error: "Invalid role name" });
+    }
+
+    const existing = await Role.findOne({ key });
+    if (existing) {
+      return res.status(409).json({ error: "Role already exists" });
+    }
+
+    const permissions = {};
+    for (const p of DEFAULT_PERMISSIONS) {
+      permissions[p.key] = false;
+    }
+
+    const doc = await Role.create({ key, label, permissions, users: 0 });
+
+    res.status(201).json({
+      role: {
+        key: doc.key,
+        label: doc.label,
+        users: 0,
+        granted: 0,
+        total: DEFAULT_PERMISSIONS.length,
+        permissions,
+      },
+    });
+  } catch (error) {
+    console.error("Create role error:", error);
+    res.status(500).json({ error: "Failed to create role" });
   }
 });
 
