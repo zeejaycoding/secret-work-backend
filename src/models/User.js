@@ -49,6 +49,7 @@ const userSchema = new mongoose.Schema(
       enum: ["member", "coach"],
       default: "member",
     },
+    assignedRoles: { type: [String], default: [] },
     completedDrills: [
       {
         type: mongoose.Schema.Types.ObjectId,

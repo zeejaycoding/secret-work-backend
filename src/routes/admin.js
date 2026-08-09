@@ -765,6 +765,85 @@ router.post("/roles", adminAuth, async (req, res) => {
   }
 });
 
+// ── Roles & Permissions: Detail + assigned users ──
+router.get("/roles/:key", adminAuth, async (req, res) => {
+  try {
+    const key = String(req.params.key || "");
+    const def = DEFAULT_ROLES[key];
+    const doc = await Role.findOne({ key });
+    if (!def && !doc) {
+      return res.status(404).json({ error: "Role not found" });
+    }
+
+    const permissions = {
+      ...(def?.permissions || {}),
+      ...(doc?.permissions || {}),
+    };
+
+    // Assigned users: users whose role matches, or whose assignedRoles list includes this role
+    const users = await User.find({
+      $or: [{ role: key }, { assignedRoles: key }],
+    })
+      .select("firstName lastName email avatarUrl role status subscriptionTier")
+      .sort({ createdAt: 1 });
+
+    res.json({
+      role: {
+        key,
+        label: doc?.label || def?.label || key,
+        granted: Object.values(permissions).filter(Boolean).length,
+        total: DEFAULT_PERMISSIONS.length,
+        permissions,
+      },
+      users: users.map((u) => ({
+        _id: u._id,
+        firstName: u.firstName,
+        lastName: u.lastName,
+        name: [u.firstName, u.lastName].filter(Boolean).join(" "),
+        email: u.email,
+        avatarUrl: u.avatarUrl,
+        role: u.role,
+        status: u.status,
+        subscriptionTier: u.subscriptionTier,
+      })),
+    });
+  } catch (error) {
+    console.error("Role detail error:", error);
+    res.status(500).json({ error: "Failed to fetch role" });
+  }
+});
+
+// ── Roles & Permissions: Remove user from role ──
+router.delete("/roles/:key/users/:userId", adminAuth, async (req, res) => {
+  try {
+    const key = String(req.params.key || "");
+    const userId = String(req.params.userId || "");
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const assignedRoles = (user.assignedRoles || []).filter(
+      (r) => r !== key
+    );
+
+    // If the user's primary role matches, fall back to member
+    let role = user.role;
+    if (role === key) {
+      role = "member";
+    }
+
+    user.assignedRoles = assignedRoles;
+    user.role = role;
+    await user.save();
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Remove user from role error:", error);
+    res.status(500).json({ error: "Failed to remove user from role" });
+  }
+});
 // ── Content Library: List Drills ──
 router.get("/drills", adminAuth, async (req, res) => {
   try {
