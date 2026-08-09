@@ -1,6 +1,7 @@
 const { User } = require("../models/User");
 const UserNotification = require("../models/UserNotification");
 const { sendNotificationEmail } = require("./email");
+const { getIO } = require("../socket");
 
 const CHANNELS = ["push", "inapp", "email"];
 const AUDIENCES = ["all", "free", "monthly", "annual", "premium"];
@@ -60,6 +61,20 @@ async function deliverInApp(campaign, users) {
   }));
 
   await UserNotification.insertMany(docs);
+
+  try {
+    const io = getIO();
+    for (const u of recipients) {
+      const count = await UserNotification.countDocuments({
+        userId: u._id,
+        read: false,
+      });
+      io.to(`user:${u._id}`).emit("notification:new", { count });
+    }
+  } catch (error) {
+    console.error("In-app socket emit failed:", error.message);
+  }
+
   return docs.length;
 }
 
