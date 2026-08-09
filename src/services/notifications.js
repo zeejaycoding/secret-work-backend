@@ -70,6 +70,7 @@ async function deliverEmail(campaign, users) {
 
   let delivered = 0;
   let failed = 0;
+  let lastError = "";
   await Promise.all(
     recipients.map(async (u) => {
       try {
@@ -81,11 +82,12 @@ async function deliverEmail(campaign, users) {
         delivered += 1;
       } catch (error) {
         failed += 1;
+        if (!lastError) lastError = error.message || String(error);
         console.error("Email delivery failed for", u.email, ":", error.message);
       }
     })
   );
-  return { delivered, failed };
+  return { delivered, failed, lastError };
 }
 
 async function sendExpoPushBatch(payloads) {
@@ -111,7 +113,7 @@ async function deliverPush(campaign, users) {
   const recipients = users.filter(
     (u) => u.pushToken && prefsEnabled(u, "push")
   );
-  if (!recipients.length) return { delivered: 0, failed: 0 };
+  if (!recipients.length) return { delivered: 0, failed: 0, lastError: "No push tokens registered" };
 
   const payloads = recipients.map((u) => ({
     to: u.pushToken,
@@ -123,6 +125,7 @@ async function deliverPush(campaign, users) {
 
   let delivered = 0;
   let failed = 0;
+  let lastError = "";
 
   // Expo accepts up to 100 tokens per request.
   for (let i = 0; i < payloads.length; i += 100) {
@@ -135,31 +138,36 @@ async function deliverPush(campaign, users) {
       });
     } catch (error) {
       failed += chunk.length;
+      if (!lastError) lastError = error.message || String(error);
       console.error("Push delivery error:", error.message || error);
     }
   }
-  return { delivered, failed };
+  return { delivered, failed, lastError };
 }
 
 async function deliverCampaign(campaign) {
   const users = await resolveAudience(campaign.audience);
   campaign.reach = users.length;
 
+  let lastError = "";
   if (campaign.channel === "inapp") {
     campaign.delivered = await deliverInApp(campaign, users);
   } else if (campaign.channel === "email") {
     const result = await deliverEmail(campaign, users);
     campaign.delivered = result.delivered;
     campaign.failedCount = result.failed;
+    lastError = result.lastError || "";
   } else if (campaign.channel === "push") {
     const result = await deliverPush(campaign, users);
     campaign.delivered = result.delivered;
     campaign.failedCount = result.failed;
+    lastError = result.lastError || "";
   }
 
   campaign.status = "sent";
   campaign.sentAt = new Date();
-  campaign.error = undefined;
+  campaign.error =
+    lastError || (campaign.failedCount > 0 ? `${campaign.failedCount} failed` : undefined);
   await campaign.save();
   return campaign;
 }

@@ -28,4 +28,18 @@ router.get("/:id", async (req, res) => {
   }
 });
 
+// ── Drills: Record a view (increments drill views) ──
+router.post("/:id/view", async (req, res) => {
+  try {
+    const drill = await Drill.findById(req.params.id);
+    if (!drill) return res.status(404).json({ error: "Drill not found" });
+
+    await Drill.updateOne({ _id: req.params.id }, { $inc: { views: 1 } });
+    res.json({ success: true, views: drill.views + 1 });
+  } catch (error) {
+    console.error("Record drill view error:", error);
+    res.status(500).json({ error: "Failed to record drill view" });
+  }
+});
+
 module.exports = router;
