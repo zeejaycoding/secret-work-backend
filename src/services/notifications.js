@@ -4,7 +4,7 @@ const { sendNotificationEmail } = require("./email");
 const { getIO } = require("../socket");
 
 const CHANNELS = ["push", "inapp", "email"];
-const AUDIENCES = ["all", "free", "monthly", "annual", "premium"];
+const AUDIENCES = ["all", "free", "monthly", "pro", "annual", "premium"];
 
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 
@@ -13,6 +13,7 @@ function audienceQuery(audience) {
     case "free":
       return { status: "active", subscriptionTier: "free" };
     case "monthly":
+    case "pro":
       return {
         status: "active",
         subscriptionTier: { $in: ["pro", "premium"] },
