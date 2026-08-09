@@ -1,52 +1,50 @@
 const { Router } = require("express");
-const Program = require("../models/Program");
 const Drill = require("../models/Drill");
 const Pro = require("../models/Pro");
 
 const router = Router();
 
-function visibleProgramDrills(program) {
-  const removed = (program.removedDrills || []).map((r) => String(r._id || r));
-  return (program.drills || [])
-    .filter((d) => d.drill && !removed.has(String(d.drill._id || d.drill)))
-    .sort((a, b) => (a.order || 0) - (b.order || 0));
-}
-
-function toSectionCard(program) {
-  const plain = program._doc || program;
-  const coachName = plain.coach || "";
-  const title = coachName
-    ? `${coachName} ${plain.name.replace(/^Workout:\s*/i, "")}`
-    : plain.name;
-
+function toVideoShape(drill) {
   return {
-    id: String(plain._id),
-    title,
-    workouts: (plain.drills || [])
-      .map((item) => {
-        const d = item.drill;
-        if (!d) return null;
-        const drill = d._doc || d;
-        return {
-          id: String(drill._id),
-          name: drill.title || drill.name || "",
-          level: drill.level || "",
-          duration: drill.duration || "",
-          image: drill.imageUrl || "",
-        };
-      })
-      .filter(Boolean),
+    id: String(drill._id),
+    title: drill.title || "",
+    category: drill.category || "",
+    duration: drill.duration || "20 secs",
+    reps: "5 Reps",
+    image: drill.imageUrl || "",
+    videoUrl: drill.videoUrl || "",
   };
 }
 
-// ── Workouts: Public Sections (published programs only) ──
+// ── Workouts: Public Sections — real published drills grouped by their coach ──
 router.get("/", async (req, res) => {
   try {
-    const programs = await Program.find({ status: "published" })
-      .populate("drills.drill")
-      .sort({ createdAt: 1 });
+    const drills = await Drill.find({ status: "published" }).sort({
+      createdAt: 1,
+    });
 
-    const sections = programs.map(toSectionCard).filter((s) => s.workouts.length);
+    const groups = new Map();
+    for (const drill of drills) {
+      const coach = (drill.coach || "").trim();
+      if (!coach) continue;
+      if (!groups.has(coach)) groups.set(coach, []);
+      groups.get(coach).push(drill);
+    }
+
+    const sections = Array.from(groups.entries())
+      .filter(([, list]) => list.length > 0)
+      .map(([coach, list]) => ({
+        id: coach,
+        title: coach,
+        workouts: list.map((d) => ({
+          id: String(d._id),
+          name: d.title || "",
+          level: d.level || "",
+          duration: d.duration || "",
+          image: d.imageUrl || "",
+        })),
+      }));
+
     res.json({ workouts: sections });
   } catch (error) {
     console.error("Public workouts list error:", error);
@@ -105,53 +103,36 @@ router.get("/quick", async (req, res) => {
   }
 });
 
-// ── Workouts: Coach Profile Detail ──
+// ── Workouts: Coach Profile Detail (real published drills for that coach) ──
 router.get("/:id", async (req, res) => {
   try {
-    const program = await Program.findById(req.params.id).populate("drills.drill");
-    if (!program) {
+    const coach = String(req.params.id || "").trim();
+    const pro = await Pro.findOne({
+      name: { $regex: `^${coach.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" },
+    });
+
+    const drills = await Drill.find({ status: "published", coach }).sort({
+      createdAt: 1,
+    });
+    if (drills.length === 0) {
       return res.status(404).json({ error: "Workout not found" });
     }
 
-    const coachId = program.coachId;
-    let pro = null;
-    if (coachId) {
-      pro = await Pro.findById(coachId);
-    }
-
-    const drills = visibleProgramDrills(program);
-    const videos = drills
-      .map((item) => {
-        const d = item.drill;
-        if (!d) return null;
-        const drill = d._doc || d;
-        return {
-          id: String(drill._id),
-          title: drill.title || "",
-          category: drill.category || "",
-          duration: drill.duration || "20 secs",
-          reps: "5 Reps",
-          image: drill.imageUrl || "",
-          videoUrl: drill.videoUrl || "",
-        };
-      })
-      .filter(Boolean);
-
     const stats = {
-      followers: pro?.followersCount ? `${pro.followersCount}k` : "12k",
-      videos: pro?.sessions || videos.length,
-      yearsExp: pro?.yearsOfExperience || 10,
+      followers: pro ? `${pro.sessions || 0}k` : "12k",
+      videos: drills.length,
+      yearsExp: 10,
     };
 
     res.json({
       workout: {
-        id: String(program._id),
-        coachName: program.coach || pro?.name || "Coach",
+        id: coach,
+        coachName: coach,
         team: pro?.team || "Professional Trainer",
-        description: program.description || "",
-        image: program.imageUrl || "",
+        description: "",
+        image: drills[0].imageUrl || "",
         stats,
-        videos,
+        videos: drills.map(toVideoShape),
       },
     });
   } catch (error) {
