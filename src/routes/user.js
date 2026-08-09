@@ -6,6 +6,7 @@ const Pro = require("../models/Pro");
 const Drill = require("../models/Drill");
 const Program = require("../models/Program");
 const Follow = require("../models/Follow");
+const { recordActivity } = require("../services/activity");
 
 const router = Router();
 
@@ -164,6 +165,8 @@ router.post("/progress/completed-drills", async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
+    await recordActivity(req.auth.userId, "drill");
+
     res.json({ success: true, completedDrills: user.completedDrills });
   } catch (error) {
     console.error("Record drill completion error:", error);
@@ -190,6 +193,8 @@ router.post("/progress/watch", async (req, res) => {
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
+
+    await recordActivity(req.auth.userId, "watch");
 
     res.json({ success: true, watchTimeSec: user.watchTimeSec });
   } catch (error) {
@@ -224,6 +229,8 @@ router.post("/programs/enroll", async (req, res) => {
       await user.save();
       await Program.updateOne({ _id: programId }, { $inc: { enrolled: 1 } });
     }
+
+    await recordActivity(req.auth.userId, "program");
 
     res.json({ success: true, enrolledPrograms: user.enrolledPrograms });
   } catch (error) {

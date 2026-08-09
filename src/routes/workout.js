@@ -10,6 +10,8 @@ function toVideoShape(drill) {
     id: String(drill._id),
     title: drill.title || "",
     category: drill.category || "",
+    description: drill.description || "",
+    level: drill.level || "",
     duration: drill.duration || "20 secs",
     reps: "5 Reps",
     image: drill.imageUrl || "",

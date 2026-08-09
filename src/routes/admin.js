@@ -11,6 +11,8 @@ const Category = require("../models/Category");
 const Program = require("../models/Program");
 const Pro = require("../models/Pro");
 const Podcast = require("../models/Podcast");
+const Transaction = require("../models/Transaction");
+const Activity = require("../models/Activity");
 const Plan = require("../models/Plan");
 const { DEFAULT_PLANS, formatPriceLabel } = require("../config/plans");
 const { transcribePodcast } = require("../services/transcribe");
@@ -488,6 +490,109 @@ router.put("/plans/:key", adminAuth, async (req, res) => {
   } catch (error) {
     console.error("Update plan error:", error);
     res.status(500).json({ error: "Failed to update plan" });
+  }
+});
+
+// ── Analytics ──
+router.get("/analytics", adminAuth, async (req, res) => {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayStr = today.toISOString().slice(0, 10);
+
+    // DAU: distinct users active today
+    const dauAgg = await Activity.aggregate([
+      { $match: { date: todayStr } },
+      { $group: { _id: "$userId" } },
+      { $count: "users" },
+    ]);
+    const dau = dauAgg[0]?.users || 0;
+
+    // Active sessions: total activity events today
+    const sessionAgg = await Activity.aggregate([
+      { $match: { date: todayStr } },
+      { $group: { _id: null, total: { $sum: "$count" } } },
+    ]);
+    const activeSessions = sessionAgg[0]?.total || 0;
+
+    // Retention: users active in last 7 days vs last 14 days
+    const daysAgo = (n) => {
+      const d = new Date();
+      d.setDate(d.getDate() - n);
+      return d.toISOString().slice(0, 10);
+    };
+    const weekStart = daysAgo(6);
+    const twoWeekStart = daysAgo(13);
+
+    const [weekActiveAgg, twoWeekActiveAgg] = await Promise.all([
+      Activity.aggregate([
+        { $match: { date: { $gte: weekStart } } },
+        { $group: { _id: "$userId" } },
+        { $count: "users" },
+      ]),
+      Activity.aggregate([
+        { $match: { date: { $gte: twoWeekStart } } },
+        { $group: { _id: "$userId" } },
+        { $count: "users" },
+      ]),
+    ]);
+
+    const weekActive = weekActiveAgg[0]?.users || 0;
+    const twoWeekActive = twoWeekActiveAgg[0]?.users || 0;
+    const retention = twoWeekActive
+      ? Math.round((weekActive / twoWeekActive) * 1000) / 10
+      : 0;
+
+    // Top coach: most drill views by coach
+    const topCoaches = await Drill.aggregate([
+      { $group: { _id: "$coach", views: { $sum: "$views" } } },
+      { $sort: { views: -1 } },
+      { $limit: 1 },
+    ]);
+    const topCoach = topCoaches[0]
+      ? { name: topCoaches[0]._id, views: topCoaches[0].views }
+      : { name: "—", views: 0 };
+
+    // Daily active users, last 14 days
+    const dailyActive = [];
+    for (let i = 13; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const dayStr = d.toISOString().slice(0, 10);
+      const agg = await Activity.aggregate([
+        { $match: { date: dayStr } },
+        { $group: { _id: "$userId" } },
+        { $count: "users" },
+      ]);
+      dailyActive.push({
+        date: dayStr,
+        label: `d${i + 1}`,
+        users: agg[0]?.users || 0,
+      });
+    }
+
+    // Most watched drills by views
+    const mostWatchedDrills = await Drill.find({ status: "published" })
+      .sort({ views: -1 })
+      .limit(10)
+      .select("title views");
+
+    res.json({
+      stats: {
+        dau,
+        activeSessions,
+        retention,
+        topCoach,
+      },
+      dailyActive,
+      mostWatchedDrills: mostWatchedDrills.map((d) => ({
+        name: d.title,
+        views: d.views || 0,
+      })),
+    });
+  } catch (error) {
+    console.error("Analytics stats error:", error);
+    res.status(500).json({ error: "Failed to fetch analytics" });
   }
 });
 
