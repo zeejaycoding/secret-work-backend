@@ -89,11 +89,22 @@ initSocket(httpServer);
 
 async function seedPlans() {
   for (const key of Object.keys(DEFAULT_PLANS)) {
-    await Plan.findOneAndUpdate(
-      { key },
-      { $setOnInsert: DEFAULT_PLANS[key] },
-      { upsert: true }
-    );
+    const defaults = DEFAULT_PLANS[key];
+    const existing = await Plan.findOne({ key });
+    if (!existing) {
+      await Plan.create(defaults);
+      continue;
+    }
+    let changed = false;
+    if (!existing.label) {
+      existing.label = defaults.label;
+      changed = true;
+    }
+    if (!existing.benefits || !existing.benefits.length) {
+      existing.benefits = defaults.benefits;
+      changed = true;
+    }
+    if (changed) await existing.save();
   }
 }
 

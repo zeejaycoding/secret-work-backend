@@ -14,6 +14,9 @@ router.get("/", async (req, res) => {
     const plans = Object.keys(DEFAULT_PLANS).map((key) => {
       const doc = byKey[key];
       const source = doc || DEFAULT_PLANS[key];
+      const benefits = (source.benefits || []).length
+        ? source.benefits
+        : DEFAULT_PLANS[key].benefits;
       return {
         key: source.key,
         label: source.label,
@@ -21,10 +24,14 @@ router.get("/", async (req, res) => {
           amount: Number(source.price?.amount) || 0,
           interval: source.price?.interval || "",
         },
-        benefits: (source.benefits || []).map((b) => ({
-          text: b.text,
-          enabled: !!b.enabled,
-        })),
+        benefits: benefits.map((b) => {
+          const text =
+            typeof b === "string" ? b : String(b.text || b.benefit || b.name || "");
+          return {
+            text: text.trim(),
+            enabled: typeof b === "string" ? true : !!b.enabled,
+          };
+        }),
       };
     });
 

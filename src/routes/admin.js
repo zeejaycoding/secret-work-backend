@@ -360,6 +360,17 @@ router.get("/plans/:key", adminAuth, async (req, res) => {
 
     const doc = (await Plan.findOne({ key })) || DEFAULT_PLANS[key];
 
+    const storedBenefits = (doc.benefits || []).filter(
+      (b) => b && (b.text || b.benefit || b.name)
+    );
+    const benefits = (storedBenefits.length
+      ? storedBenefits
+      : DEFAULT_PLANS[key].benefits
+    ).map((b) => ({
+      text: String(b.text || b.benefit || b.name || "").trim(),
+      enabled: !!b.enabled,
+    }));
+
     let activeUsers = 0;
     if (key === "free") {
       activeUsers = await User.countDocuments({ subscriptionTier: "free" });
@@ -396,10 +407,7 @@ router.get("/plans/:key", adminAuth, async (req, res) => {
           interval: doc.price?.interval || "",
           label: formatPriceLabel(doc.price),
         },
-        benefits: (doc.benefits || []).map((b) => ({
-          text: b.text,
-          enabled: !!b.enabled,
-        })),
+        benefits,
         activeUsers,
         revenue: Math.round(revenue * 100) / 100,
       },
@@ -409,7 +417,6 @@ router.get("/plans/:key", adminAuth, async (req, res) => {
     res.status(500).json({ error: "Failed to fetch plan" });
   }
 });
-
 // ── Plan Detail: Update (price, interval, label, benefits) ──
 router.put("/plans/:key", adminAuth, async (req, res) => {
   try {
@@ -439,10 +446,14 @@ router.put("/plans/:key", adminAuth, async (req, res) => {
       }
     }
     if (Array.isArray(req.body.benefits)) {
-      updates.benefits = req.body.benefits.map((b) => ({
-        text: String(b.text || "").trim() || "Benefit",
-        enabled: !!b.enabled,
-      }));
+      updates.benefits = req.body.benefits.map((b) => {
+        const text =
+          typeof b === "string" ? b : String(b.text || b.benefit || b.name || "");
+        return {
+          text: text.trim() || "Benefit",
+          enabled: typeof b === "string" ? true : !!b.enabled,
+        };
+      });
     }
 
     let plan = await Plan.findOne({ key });
@@ -464,8 +475,12 @@ router.put("/plans/:key", adminAuth, async (req, res) => {
           interval: plan.price?.interval || "",
           label: formatPriceLabel(plan.price),
         },
-        benefits: (plan.benefits || []).map((b) => ({
-          text: b.text,
+        benefits: (
+          (plan.benefits || []).length
+            ? plan.benefits
+            : DEFAULT_PLANS[key].benefits
+        ).map((b) => ({
+          text: String(b.text || b.benefit || b.name || "").trim(),
           enabled: !!b.enabled,
         })),
       },
