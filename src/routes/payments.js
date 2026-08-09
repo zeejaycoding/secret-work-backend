@@ -20,6 +20,48 @@ function toBillingInterval(value) {
   return undefined;
 }
 
+// Stripe stores the recurring interval on subscription items as plan.interval
+// (and price.recurring.interval), not plan.recurring.interval.
+function getInterval(subscription) {
+  const item = subscription?.items?.data?.[0];
+  return (
+    item?.plan?.interval ||
+    item?.price?.recurring?.interval ||
+    subscription?.plan?.interval ||
+    null
+  );
+}
+
+function getInvoiceInterval(invoice) {
+  const line = invoice?.lines?.data?.[0];
+  return line?.plan?.interval || line?.price?.recurring?.interval || null;
+}
+
+// Some invoices (e.g. initial checkout invoices in newer Stripe API versions)
+// don't carry the interval on the line item or top-level subscription field.
+async function resolveInvoiceInterval(invoice) {
+  const fromLine = getInvoiceInterval(invoice);
+  if (fromLine) return fromLine;
+
+  const candidate =
+    invoice.subscription ||
+    invoice?.lines?.data?.[0]?.parent?.subscription_item_details?.subscription;
+
+  if (!candidate) return null;
+  try {
+    const sub = await stripe.subscriptions.retrieve(candidate);
+    const item = sub?.items?.data?.[0];
+    return (
+      item?.plan?.interval ||
+      item?.price?.recurring?.interval ||
+      sub?.plan?.interval ||
+      null
+    );
+  } catch {
+    return null;
+  }
+}
+
 const checkoutRouter = Router();
 
 checkoutRouter.post("/checkout", authMiddleware, async (req, res) => {
@@ -122,7 +164,7 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
     const isActive =
       subscription && ["active", "trialing"].includes(subscription.status);
 
-    const interval = subscription?.items?.data?.[0]?.plan?.recurring?.interval;
+    const interval = getInterval(subscription);
 
     // Upgrade user if Stripe shows an active subscription
     if (isActive && user.subscriptionTier !== "pro") {
@@ -255,7 +297,7 @@ webhookRouter.post(
           const user = invoice.customer
             ? await User.findOne({ stripeCustomerId: invoice.customer })
             : null;
-          const interval = invoice.lines?.data?.[0]?.plan?.recurring?.interval;
+          const interval = await resolveInvoiceInterval(invoice);
           await upsertTransaction({
             invoiceId: invoice.id,
             chargeId: invoice.payment_intent || "",
@@ -280,7 +322,7 @@ webhookRouter.post(
           const user = invoice.customer
             ? await User.findOne({ stripeCustomerId: invoice.customer })
             : null;
-          const interval = invoice.lines?.data?.[0]?.plan?.recurring?.interval;
+          const interval = await resolveInvoiceInterval(invoice);
           await upsertTransaction({
             invoiceId: invoice.id,
             chargeId: invoice.payment_intent || "",
@@ -326,9 +368,7 @@ webhookRouter.post(
           if (user) {
             if (["active", "trialing"].includes(subscription.status)) {
               user.subscriptionTier = "pro";
-              user.billingInterval = toBillingInterval(
-                subscription?.items?.data?.[0]?.plan?.recurring?.interval
-              );
+              user.billingInterval = toBillingInterval(getInterval(subscription));
               if (subscription.current_period_end) {
                 user.subscriptionExpiry = new Date(subscription.current_period_end * 1000);
               }
@@ -355,7 +395,7 @@ webhookRouter.post(
             await user.save();
             console.log(`User ${user.email} downgraded to free`);
           }
-          const interval = subscription?.items?.data?.[0]?.plan?.recurring?.interval;
+          const interval = getInterval(subscription);
           await upsertTransaction({
             invoiceId: "",
             chargeId: "",

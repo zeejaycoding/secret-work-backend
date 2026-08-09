@@ -25,11 +25,25 @@ async function upsertTransaction(payload) {
   if (tx) {
     const current = STATUS_PRIORITY[tx.status] || 1;
     const next = STATUS_PRIORITY[status] || 1;
+    let changed = false;
     if (next > current) {
       tx.status = status;
       if (status === "success" && amount != null) tx.amount = amount;
-      await tx.save();
+      changed = true;
     }
+    if (payload.userEmail && tx.userEmail !== payload.userEmail) {
+      tx.userEmail = payload.userEmail;
+      changed = true;
+    }
+    if (payload.userName && tx.userName !== payload.userName) {
+      tx.userName = payload.userName;
+      changed = true;
+    }
+    if (payload.plan && tx.plan !== payload.plan) {
+      tx.plan = payload.plan;
+      changed = true;
+    }
+    if (changed) await tx.save();
     return tx;
   }
 

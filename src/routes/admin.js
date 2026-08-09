@@ -249,11 +249,11 @@ router.get("/subscriptions", adminAuth, async (req, res) => {
     const activeSubscriptions = proUsers + premiumUsers;
 
     const monthlyPro = await User.countDocuments({
-      subscriptionTier: "pro",
-      billingInterval: "monthly",
+      subscriptionTier: { $in: ["pro", "premium"] },
+      billingInterval: { $ne: "annual" },
     });
     const annualPro = await User.countDocuments({
-      subscriptionTier: "pro",
+      subscriptionTier: { $in: ["pro", "premium"] },
       billingInterval: "annual",
     });
 
@@ -309,9 +309,9 @@ router.get("/subscriptions", adminAuth, async (req, res) => {
     }
 
     const planBreakdown = [
-      { plan: "Free", count: freeUsers },
-      { plan: "Monthly Pro", count: monthlyPro },
-      { plan: "Annual Pro", count: annualPro },
+      { key: "free", plan: "Free", count: freeUsers },
+      { key: "monthly", plan: "Monthly Pro", count: monthlyPro },
+      { key: "annual", plan: "Annual Pro", count: annualPro },
     ];
 
     const and = [];
@@ -346,6 +346,96 @@ router.get("/subscriptions", adminAuth, async (req, res) => {
   } catch (error) {
     console.error("Subscriptions stats error:", error);
     res.status(500).json({ error: "Failed to fetch subscriptions stats" });
+  }
+});
+
+// ── Plan Detail ──
+router.get("/plans/:key", adminAuth, async (req, res) => {
+  try {
+    const key = String(req.params.key || "").toLowerCase();
+    const plans = {
+      free: {
+        key: "free",
+        label: "Free",
+        price: { amount: 0, interval: "", label: "$0" },
+        description: "Pricing, benefits and revenue.",
+        benefits: [
+          "Access to Free Drills",
+          "Track Your Progress",
+          "Basic Profile",
+        ],
+      },
+      monthly: {
+        key: "monthly",
+        label: "Monthly Pro",
+        price: { amount: 9.5, interval: "month", label: "$9.50/mo" },
+        description: "Pricing, benefits and revenue.",
+        benefits: [
+          "Unlimited Access to All Drills",
+          "Structured Workouts That Actually Improve You",
+          "Learn From Real Game Situations",
+          "Faster Progress With Guided Sessions",
+          "New Drills Added Regularly",
+        ],
+      },
+      annual: {
+        key: "annual",
+        label: "Annual Pro",
+        price: { amount: 79, interval: "year", label: "$79/yr" },
+        description: "Pricing, benefits and revenue.",
+        benefits: [
+          "Unlimited Access to All Drills",
+          "Structured Workouts That Actually Improve You",
+          "Learn From Real Game Situations",
+          "Faster Progress With Guided Sessions",
+          "New Drills Added Regularly",
+          "Best Value — Save With Annual Billing",
+        ],
+      },
+    };
+
+    const plan = plans[key];
+    if (!plan) {
+      return res.status(404).json({ error: "Plan not found" });
+    }
+
+    let activeUsers = 0;
+    if (key === "free") {
+      activeUsers = await User.countDocuments({ subscriptionTier: "free" });
+    } else if (key === "monthly") {
+      activeUsers = await User.countDocuments({
+        subscriptionTier: { $in: ["pro", "premium"] },
+        billingInterval: { $ne: "annual" },
+      });
+    } else {
+      activeUsers = await User.countDocuments({
+        subscriptionTier: { $in: ["pro", "premium"] },
+        billingInterval: "annual",
+      });
+    }
+
+    const revenueAgg = await Transaction.aggregate([
+      {
+        $match: {
+          status: "success",
+          plan: key === "free" ? "" : key,
+        },
+      },
+      { $group: { _id: null, total: { $sum: "$amount" } } },
+    ]);
+
+    const revenue = revenueAgg[0]?.total || 0;
+
+    res.json({
+      plan: {
+        ...plan,
+        activeUsers,
+        revenue: Math.round(revenue * 100) / 100,
+      },
+    });
+  } catch (error) {
+    console.error("Plan detail error:", error);
+    res.status(500).json({ error: "Failed to fetch plan" });
   }
 });
 
