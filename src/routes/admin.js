@@ -1261,6 +1261,69 @@ router.post("/users/:id/reset-password", adminAuth, async (req, res) => {
   }
 });
 
+// ── Coaches: Get by name (with stats + published drills) ──
+router.get("/coaches/:name", adminAuth, async (req, res) => {
+  try {
+    const name = String(req.params.name || "").trim();
+    if (!name) {
+      return res.status(400).json({ error: "Coach name is required" });
+    }
+
+    const allDrills = await Drill.find({
+      coach: { $regex: new RegExp(`^${escapeRegex(name)}$`, "i") },
+    }).sort({ createdAt: -1 });
+
+    const published = allDrills.filter((d) => d.status === "published");
+
+    const totalViews = allDrills.reduce((s, d) => s + (d.views || 0), 0);
+    const completionRates = allDrills
+      .map((d) => d.completionRate || 0)
+      .filter((v) => v > 0);
+    const avgCompletion = completionRates.length
+      ? Math.round(
+          (completionRates.reduce((a, b) => a + b, 0) / completionRates.length) * 100
+        ) / 100
+      : 0;
+
+    // Match a coach user account (role = "coach") so we can surface a real avatar if one exists
+    const stripped = name.replace(/^coach\s+/i, "");
+    const nameParts = stripped.split(/\s+/).filter(Boolean);
+    let user = null;
+    if (nameParts.length >= 1) {
+      const conditions = [
+        { firstName: { $regex: new RegExp(`^${escapeRegex(nameParts[0])}$`, "i") } },
+      ];
+      if (nameParts.length > 1) {
+        conditions.push({
+          lastName: {
+            $regex: new RegExp(`^${escapeRegex(nameParts[nameParts.length - 1])}$`, "i"),
+          },
+        });
+      }
+      user = await User.findOne({ role: "coach", $or: conditions });
+    }
+
+    res.json({
+      coach: {
+        name,
+        description: "",
+        imageUrl: user?.avatarUrl || "",
+        role: user ? user.role : null,
+      },
+      stats: {
+        drills: published.length,
+        followers: 0,
+        avgCompletion,
+        totalViews,
+      },
+      drills: published,
+    });
+  } catch (error) {
+    console.error("Get coach error:", error);
+    res.status(500).json({ error: "Failed to fetch coach" });
+  }
+});
+
 // ── Categories: List ──
 router.get("/categories", adminAuth, async (req, res) => {
   try {
