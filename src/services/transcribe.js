@@ -2,6 +2,45 @@ const { env } = require("../config/env");
 
 const MAX_FILE_BYTES = 24 * 1024 * 1024;
 
+const SUPPORTED_EXTENSIONS = new Set([
+  "flac",
+  "m4a",
+  "mp3",
+  "mp4",
+  "mpeg",
+  "mpga",
+  "oga",
+  "ogg",
+  "wav",
+  "webm",
+]);
+
+const MIME_BY_EXTENSION = {
+  flac: "audio/flac",
+  m4a: "audio/mp4",
+  mp3: "audio/mpeg",
+  mp4: "video/mp4",
+  mpeg: "audio/mpeg",
+  mpga: "audio/mpeg",
+  oga: "audio/ogg",
+  ogg: "audio/ogg",
+  wav: "audio/wav",
+  webm: "audio/webm",
+};
+
+function extensionFromUrl(url) {
+  try {
+    const filename = new URL(url).pathname.split("/").pop() || "";
+    const ext = filename.split(".").pop();
+    if (ext && SUPPORTED_EXTENSIONS.has(String(ext).toLowerCase())) {
+      return String(ext).toLowerCase();
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
 async function downloadMedia(url) {
   const response = await fetch(url, { redirect: "follow" });
   if (!response.ok) {
@@ -32,12 +71,13 @@ async function transcribePodcast(mediaUrl) {
   }
 
   const audioBuffer = await downloadMedia(mediaUrl);
+  const ext = extensionFromUrl(mediaUrl) || "mp3";
 
   const formData = new FormData();
   formData.append(
     "file",
-    new Blob([audioBuffer], { type: "application/octet-stream" }),
-    "podcast-media"
+    new Blob([audioBuffer], { type: MIME_BY_EXTENSION[ext] || "application/octet-stream" }),
+    `podcast-media.${ext}`
   );
   formData.append("model", "whisper-1");
   formData.append("response_format", "verbose_json");

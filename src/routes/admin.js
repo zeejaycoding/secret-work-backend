@@ -1549,6 +1549,7 @@ router.get("/programs/:id", adminAuth, async (req, res) => {
       };
     });
     plain.enrolled = enrolledUsers.length;
+    plain.totalUsers = totalUsers;
     plain.enrolledUsers = enrolledUsers.map((u) => ({
       _id: u._id,
       name:
