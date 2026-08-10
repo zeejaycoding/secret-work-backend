@@ -245,9 +245,9 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
             plan: txPlan,
             amount: txAmount,
             status: "success",
-            date: new Date(
-              (subscription.current_period_start || Date.now()) * 1000
-            ),
+            date: subscription.current_period_start
+              ? new Date(subscription.current_period_start * 1000)
+              : new Date(),
           });
         }
       } catch (txErr) {
@@ -413,7 +413,9 @@ webhookRouter.post(
             plan: toBillingInterval(interval) || "",
             amount: (invoice.amount_due || 0) / 100,
             status: "failed",
-            date: new Date((invoice.created || Date.now()) * 1000),
+            date: invoice.created
+              ? new Date(invoice.created * 1000)
+              : new Date(),
           });
           break;
         }
@@ -486,7 +488,9 @@ webhookRouter.post(
             plan: toBillingInterval(interval) || "",
             amount: 0,
             status: "cancelled",
-            date: new Date((subscription.canceled_at || Date.now()) * 1000),
+            date: subscription.canceled_at
+              ? new Date(subscription.canceled_at * 1000)
+              : new Date(),
           });
           break;
         }
