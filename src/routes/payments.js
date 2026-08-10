@@ -3,6 +3,7 @@ const { Router } = require("express");
 const Stripe = require("stripe");
 const { User } = require("../models/User");
 const Plan = require("../models/Plan");
+const Transaction = require("../models/Transaction");
 const { env } = require("../config/env");
 const { authMiddleware } = require("../middleware/auth");
 const { upsertTransaction } = require("../services/transactions");
@@ -212,6 +213,46 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
       user.subscriptionExpiry = undefined;
       user.billingInterval = undefined;
       await user.save();
+    }
+
+    // Fallback: record a transaction for an active subscription even if the
+    // Stripe webhook never fired. The app polls this endpoint after checkout,
+    // so this guarantees admin subscription history + revenue chart update.
+    if (isActive && subscription) {
+      try {
+        const item = subscription?.items?.data?.[0];
+        const priceAmount = item?.price?.unit_amount || item?.plan?.amount;
+        const txAmount = priceAmount != null ? priceAmount / 100 : null;
+        const invoiceId = subscription.latest_invoice || "";
+        const txPlan = toBillingInterval(interval) || "";
+
+        const existing = invoiceId
+          ? await Transaction.findOne({ stripeInvoiceId: invoiceId })
+          : await Transaction.findOne({
+              stripeSubscriptionId: subscription.id || "",
+              plan: txPlan,
+              status: "success",
+            });
+
+        if (!existing) {
+          await upsertTransaction({
+            invoiceId: invoiceId || "",
+            chargeId: "",
+            subscriptionId: subscription.id || "",
+            userId: user._id,
+            userEmail: user.email,
+            userName: `${user.firstName || ""} ${user.lastName || ""}`.trim(),
+            plan: txPlan,
+            amount: txAmount,
+            status: "success",
+            date: new Date(
+              (subscription.current_period_start || Date.now()) * 1000
+            ),
+          });
+        }
+      } catch (txErr) {
+        console.error("Fallback transaction record error:", txErr.message || txErr);
+      }
     }
 
     res.json({

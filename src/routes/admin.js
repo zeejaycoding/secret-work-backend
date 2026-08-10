@@ -397,23 +397,25 @@ router.get("/subscriptions", adminAuth, async (req, res) => {
 
     const today = new Date();
     const dailyRevenue = [];
+    const startUtc = Date.UTC(
+      today.getUTCFullYear(),
+      today.getUTCMonth(),
+      today.getUTCDate()
+    );
     for (let i = 13; i >= 0; i--) {
-      const day = new Date(today);
-      day.setDate(today.getDate() - i);
-      day.setHours(0, 0, 0, 0);
-      const next = new Date(day);
-      next.setDate(day.getDate() + 1);
+      const dayStart = new Date(startUtc - i * 86400000);
+      const next = new Date(dayStart.getTime() + 86400000);
       const agg = await Transaction.aggregate([
         {
           $match: {
             status: "success",
-            date: { $gte: day, $lt: next },
+            date: { $gte: dayStart, $lt: next },
           },
         },
         { $group: { _id: null, revenue: { $sum: "$amount" } } },
       ]);
       dailyRevenue.push({
-        date: day.toISOString().slice(0, 10),
+        date: dayStart.toISOString().slice(0, 10),
         label: `d${i + 1}`,
         revenue: Math.round((agg[0]?.revenue || 0) * 100) / 100,
       });
