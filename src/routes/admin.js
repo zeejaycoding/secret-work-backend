@@ -1329,6 +1329,80 @@ router.get("/coaches/:name", adminAuth, async (req, res) => {
   }
 });
 
+// ── Coaches: Delete (drills, follows, program refs, user account, pro record) ──
+router.delete("/coaches/:name", adminAuth, async (req, res) => {
+  try {
+    const name = String(req.params.name || "").trim();
+    if (!name) {
+      return res.status(400).json({ error: "Coach name is required" });
+    }
+
+    const coachMatch = {
+      coach: { $regex: new RegExp(`^${escapeRegex(name)}$`, "i") },
+    };
+
+    const drills = await Drill.find(coachMatch);
+    const drillIds = drills.map((d) => d._id);
+
+    // Delete drill media from Cloudinary
+    for (const d of drills) {
+      if (d.imageUrl) deleteCloudinaryFile(d.imageUrl);
+      if (d.videoUrl) deleteCloudinaryFile(d.videoUrl);
+    }
+
+    // Delete the coach's drills
+    if (drillIds.length > 0) {
+      await Drill.deleteMany({ _id: { $in: drillIds } });
+
+      // Remove the deleted drills from every program
+      await Program.updateMany(
+        { "drills.drill": { $in: drillIds } },
+        { $pull: { drills: { drill: { $in: drillIds } } } }
+      );
+      await Program.updateMany(
+        { removedDrills: { $in: drillIds } },
+        { $pull: { removedDrills: { $in: drillIds } } }
+      );
+
+      // Remove the deleted drills from users' completion history
+      await User.updateMany(
+        { completedDrills: { $in: drillIds } },
+        { $pull: { completedDrills: { $in: drillIds } } }
+      );
+    }
+
+    // Delete all follows for this coach
+    await Follow.deleteMany(coachMatch);
+
+    // Delete a matching pro athlete record (same name)
+    const stripped = name.replace(/^coach\s+/i, "");
+    await Pro.deleteMany({
+      name: { $regex: new RegExp(`^${escapeRegex(stripped)}$`, "i") },
+    });
+
+    // Delete the matching coach user account (role = "coach")
+    const nameParts = stripped.split(/\s+/).filter(Boolean);
+    if (nameParts.length >= 1) {
+      const conditions = [
+        { firstName: { $regex: new RegExp(`^${escapeRegex(nameParts[0])}$`, "i") } },
+      ];
+      if (nameParts.length > 1) {
+        conditions.push({
+          lastName: {
+            $regex: new RegExp(`^${escapeRegex(nameParts[nameParts.length - 1])}$`, "i"),
+          },
+        });
+      }
+      await User.deleteMany({ role: "coach", $or: conditions });
+    }
+
+    res.json({ success: true, deletedDrills: drillIds.length });
+  } catch (error) {
+    console.error("Delete coach error:", error);
+    res.status(500).json({ error: "Failed to delete coach" });
+  }
+});
+
 // ── Categories: List ──
 router.get("/categories", adminAuth, async (req, res) => {
   try {
@@ -1427,8 +1501,63 @@ router.get("/programs/:id", adminAuth, async (req, res) => {
     if (!program) return res.status(404).json({ error: "Program not found" });
     await backfillProgramDrills(program);
     program = await Program.findById(req.params.id).populate("drills.drill");
+
+    // Real enrolled users (from the app's enrolledPrograms field)
+    const enrolledUsers = await User.find({ enrolledPrograms: program._id })
+      .select("firstName lastName email")
+      .sort({ createdAt: -1 })
+      .limit(30);
+
+    // Real per-drill completion counts from users' completedDrills
+    const drillIds = (program.drills || [])
+      .filter((d) => d.drill)
+      .map((d) => String(d.drill._id || d.drill));
+    const completionCounts = {};
+    if (drillIds.length) {
+      const agg = await User.aggregate([
+        { $match: { completedDrills: { $in: drillIds } } },
+        { $unwind: "$completedDrills" },
+        { $match: { completedDrills: { $in: drillIds } } },
+        { $group: { _id: "$completedDrills", count: { $sum: 1 } } },
+      ]);
+      agg.forEach((r) => {
+        completionCounts[String(r._id)] = r.count;
+      });
+    }
+    const totalUsers = await User.countDocuments();
+
     const plain = program.toObject();
-    plain.drills = visibleProgramDrills(program);
+    plain.drills = visibleProgramDrills(program).map((d) => {
+      const doc = d.drill;
+      return {
+        drill: doc
+          ? {
+              _id: doc._id,
+              title: doc.title || doc.name || "",
+              imageUrl: doc.imageUrl || "",
+              coach: doc.coach || "",
+              category: doc.category || "",
+              completions: completionCounts[String(doc._id)] || 0,
+              completionRate: totalUsers
+                ? Math.round(
+                    ((completionCounts[String(doc._id)] || 0) / totalUsers) * 100
+                  )
+                : 0,
+            }
+          : null,
+        order: d.order,
+      };
+    });
+    plain.enrolled = enrolledUsers.length;
+    plain.enrolledUsers = enrolledUsers.map((u) => ({
+      _id: u._id,
+      name:
+        [u.firstName, u.lastName].filter(Boolean).join(" ") ||
+        u.email ||
+        "User",
+      email: u.email,
+    }));
+
     res.json({ program: plain });
   } catch (error) {
     console.error("Get program error:", error);
