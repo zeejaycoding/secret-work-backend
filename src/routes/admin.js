@@ -364,8 +364,12 @@ router.get("/subscriptions", adminAuth, async (req, res) => {
       billingInterval: "annual",
     });
 
-    const monthlyPrice = 9.5;
-    const annualPrice = 79;
+    const planDocs = await Plan.find();
+    const planByKey = {};
+    planDocs.forEach((p) => (planByKey[p.key] = p));
+
+    const monthlyPrice = Number(planByKey.monthly?.price?.amount) || 9.5;
+    const annualPrice = Number(planByKey.annual?.price?.amount) || 79;
 
     let mrr = 0;
     if (annualPro > 0) mrr += (annualPro * annualPrice) / 12;
@@ -416,9 +420,30 @@ router.get("/subscriptions", adminAuth, async (req, res) => {
     }
 
     const planBreakdown = [
-      { key: "free", plan: "Free", count: freeUsers },
-      { key: "monthly", plan: "Monthly Pro", count: monthlyPro },
-      { key: "annual", plan: "Annual Pro", count: annualPro },
+      {
+        key: "free",
+        plan: "Free",
+        count: freeUsers,
+        price: 0,
+        interval: "",
+        priceLabel: "$0",
+      },
+      {
+        key: "monthly",
+        plan: "Monthly Pro",
+        count: monthlyPro,
+        price: monthlyPrice,
+        interval: planByKey.monthly?.price?.interval || "month",
+        priceLabel: formatPriceLabel(planByKey.monthly?.price),
+      },
+      {
+        key: "annual",
+        plan: "Annual Pro",
+        count: annualPro,
+        price: annualPrice,
+        interval: planByKey.annual?.price?.interval || "year",
+        priceLabel: formatPriceLabel(planByKey.annual?.price),
+      },
     ];
 
     const and = [];
@@ -1861,8 +1886,14 @@ router.post("/podcasts/:id/transcribe", adminAuth, async (req, res) => {
         .status(400)
         .json({ error: "Podcast has no media file to transcribe" });
     }
-    await runTranscription(podcast);
+
+    // Return immediately with a pending status; transcription runs in the
+    // background and the panel polls until it finishes.
+    podcast.transcriptStatus = "pending";
+    podcast.transcript = [];
+    await podcast.save();
     res.json({ podcast });
+    runTranscription(podcast).catch(() => {});
   } catch (error) {
     console.error("Transcribe podcast error:", error);
     res.status(500).json({ error: "Failed to generate transcript" });
@@ -1921,10 +1952,19 @@ router.put("/podcasts/:id", adminAuth, upload.fields([
       deleteCloudinaryFile(existing.mediaUrl);
     }
 
+    const mediaReplaced = Boolean(req.files?.media?.[0]);
+
     const podcast = await Podcast.findByIdAndUpdate(req.params.id, updates, {
       new: true,
     });
     res.json({ podcast });
+
+    // Re-transcribe when the media file is replaced
+    if (mediaReplaced && podcast.mediaUrl) {
+      podcast.transcriptStatus = "pending";
+      await podcast.save();
+      runTranscription(podcast).catch(() => {});
+    }
   } catch (error) {
     console.error("Update podcast error:", error);
     res.status(500).json({ error: "Failed to update podcast" });

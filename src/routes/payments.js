@@ -182,16 +182,27 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
 
     const interval = getInterval(subscription);
 
+    const subscriptionAmount =
+      user.subscriptionAmount != null
+        ? user.subscriptionAmount
+        : subscription?.items?.data?.[0]?.price?.unit_amount != null
+          ? subscription.items.data[0].price.unit_amount / 100
+          : null;
+
     // Upgrade user if Stripe shows an active subscription
     if (isActive && user.subscriptionTier !== "pro") {
       user.subscriptionTier = "pro";
       user.stripeSubscriptionId = subscription.id;
       user.billingInterval = toBillingInterval(interval);
+      if (subscriptionAmount != null) user.subscriptionAmount = subscriptionAmount;
       if (subscription.current_period_end) {
         user.subscriptionExpiry = new Date(subscription.current_period_end * 1000);
       }
       await user.save();
       console.log(`User ${user.email} upgraded to pro via subscription check`);
+    } else if (isActive && user.subscriptionAmount == null && subscriptionAmount != null) {
+      user.subscriptionAmount = subscriptionAmount;
+      await user.save();
     }
 
     // Downgrade if subscription expired
@@ -208,6 +219,13 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
       expiry: user.subscriptionExpiry,
       isActive: !!isActive,
       plan: interval || null,
+      amount: subscriptionAmount,
+      label:
+        interval === "month"
+          ? "Monthly Pro"
+          : interval === "year"
+            ? "Annual Pro"
+            : "Pro",
     });
   } catch (error) {
     console.error("Subscription status error:", error.message || error);
@@ -270,6 +288,9 @@ webhookRouter.post(
               user.subscriptionTier = "pro";
               user.stripeSubscriptionId = session.subscription;
               user.billingInterval = toBillingInterval(session.metadata?.plan);
+              if (session.amount_total != null) {
+                user.subscriptionAmount = session.amount_total / 100;
+              }
 
               if (session.subscription) {
                 try {

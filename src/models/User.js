@@ -35,6 +35,7 @@ const userSchema = new mongoose.Schema(
       default: "free",
     },
     subscriptionExpiry: { type: Date },
+    subscriptionAmount: { type: Number },
     billingInterval: {
       type: String,
       enum: ["monthly", "annual"],

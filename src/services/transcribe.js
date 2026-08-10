@@ -79,8 +79,9 @@ async function transcribePodcast(mediaUrl) {
     new Blob([audioBuffer], { type: MIME_BY_EXTENSION[ext] || "application/octet-stream" }),
     `podcast-media.${ext}`
   );
-  formData.append("model", "whisper-1");
-  formData.append("response_format", "verbose_json");
+  formData.append("model", "gpt-4o-mini-transcribe");
+  formData.append("response_format", "json");
+  formData.append("timestamp_granularities[]", "segment");
 
   const response = await fetch(
     "https://api.openai.com/v1/audio/transcriptions",
