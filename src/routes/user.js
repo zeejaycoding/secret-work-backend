@@ -252,6 +252,16 @@ router.post("/progress/watch", async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
+    const drillId = req.body.drillId;
+    if (drillId && /^[0-9a-fA-F]{24}$/.test(String(drillId))) {
+      await Drill.updateOne(
+        { _id: drillId },
+        { $inc: { avgWatchSec: clamped } }
+      ).catch((error) =>
+        console.error("Accumulate drill watch time error:", error.message || error)
+      );
+    }
+
     await recordActivity(req.auth.userId, "watch");
 
     res.json({ success: true, watchTimeSec: user.watchTimeSec });

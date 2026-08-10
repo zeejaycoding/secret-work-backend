@@ -31,6 +31,7 @@ const drillSchema = new mongoose.Schema(
     likes: { type: Number, default: 0 },
     completionRate: { type: Number, default: 0 },
     avgWatchTime: { type: String, default: "0 min" },
+    avgWatchSec: { type: Number, default: 0 },
     viewsHistory: [
       {
         date: { type: Date },

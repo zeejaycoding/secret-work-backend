@@ -970,14 +970,60 @@ router.get("/drills", adminAuth, async (req, res) => {
   }
 });
 
-// ── Content Library: Get Single Drill ──
+// ── Content Library: Get Single Drill (with real analytics) ──
+function formatDuration(sec) {
+  sec = Math.round(sec || 0);
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  if (m === 0) return `${s}s`;
+  return `${m}m ${s}s`;
+}
+
 router.get("/drills/:id", adminAuth, async (req, res) => {
   try {
     const drill = await Drill.findById(req.params.id);
     if (!drill) {
       return res.status(404).json({ error: "Drill not found" });
     }
-    res.json({ drill });
+
+    const completions = await User.countDocuments({
+      completedDrills: drill._id,
+    });
+
+    const totalViews = drill.views || 0;
+    const completionRate =
+      totalViews > 0
+        ? Math.min(100, Math.round((completions / totalViews) * 100))
+        : drill.completionRate || 0;
+
+    const avgWatchSec =
+      totalViews > 0 ? (drill.avgWatchSec || 0) / totalViews : 0;
+    const avgWatchTime =
+      totalViews > 0 ? formatDuration(avgWatchSec) : drill.avgWatchTime || "0 min";
+
+    const viewsHistory = [];
+    for (let i = 13; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      d.setHours(0, 0, 0, 0);
+      const entry = (drill.viewsHistory || []).find(
+        (vh) => vh.date && new Date(vh.date).getTime() === d.getTime()
+      );
+      viewsHistory.push({
+        date: d.toISOString().slice(0, 10),
+        count: entry ? entry.count || 0 : 0,
+      });
+    }
+
+    res.json({
+      drill: {
+        ...drill.toObject(),
+        completions,
+        completionRate,
+        avgWatchTime,
+        viewsHistory,
+      },
+    });
   } catch (error) {
     console.error("Get drill error:", error);
     res.status(500).json({ error: "Failed to fetch drill" });

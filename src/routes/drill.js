@@ -34,7 +34,44 @@ router.post("/:id/view", async (req, res) => {
     const drill = await Drill.findById(req.params.id);
     if (!drill) return res.status(404).json({ error: "Drill not found" });
 
-    await Drill.updateOne({ _id: req.params.id }, { $inc: { views: 1 } });
+    const dayStart = new Date();
+    dayStart.setHours(0, 0, 0, 0);
+
+    await Drill.updateOne(
+      { _id: req.params.id },
+      [
+        {
+          $set: {
+            views: { $add: ["$views", 1] },
+            viewsHistory: {
+              $cond: [
+                { $in: [dayStart, "$viewsHistory.date"] },
+                {
+                  $map: {
+                    input: "$viewsHistory",
+                    as: "vh",
+                    in: {
+                      $cond: [
+                        { $eq: ["$$vh.date", dayStart] },
+                        { date: dayStart, count: { $add: ["$$vh.count", 1] } },
+                        "$$vh",
+                      ],
+                    },
+                  },
+                },
+                {
+                  $concatArrays: [
+                    { $ifNull: ["$viewsHistory", []] },
+                    [{ date: dayStart, count: 1 }],
+                  ],
+                },
+              ],
+            },
+          },
+        },
+      ]
+    );
+
     res.json({ success: true, views: drill.views + 1 });
   } catch (error) {
     console.error("Record drill view error:", error);
