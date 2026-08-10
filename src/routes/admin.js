@@ -2048,7 +2048,29 @@ router.post("/notifications", adminAuth, async (req, res) => {
           .status(400)
           .json({ error: "scheduledAt is required for scheduled notifications" });
       }
-      const when = new Date(scheduledAt);
+      let when;
+      // Detect naive datetime-local input "YYYY-MM-DDTHH:mm" (no timezone)
+      if (typeof scheduledAt === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(scheduledAt)) {
+        // Prefer client-provided timezone offset in minutes (header: X-Client-Timezone-Offset)
+        const hdr = req.get("X-Client-Timezone-Offset") || req.get("x-client-timezone-offset");
+        const offsetMin = hdr ? parseInt(hdr, 10) : NaN;
+        // Parse components in a timezone-agnostic way
+        const m = scheduledAt.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+        if (!m) {
+          return res.status(400).json({ error: "Invalid scheduledAt" });
+        }
+        const y = parseInt(m[1], 10);
+        const mo = parseInt(m[2], 10);
+        const d = parseInt(m[3], 10);
+        const hh = parseInt(m[4], 10);
+        const mm = parseInt(m[5], 10);
+        // Create UTC ms for the local components, then adjust by client's offset
+        // UTC ms = Date.UTC(y, mo-1, d, hh, mm) - (offsetMin * 60000)
+        const utcMillis = Date.UTC(y, mo - 1, d, hh, mm) - (isNaN(offsetMin) ? 0 : offsetMin * 60000);
+        when = new Date(utcMillis);
+      } else {
+        when = new Date(scheduledAt);
+      }
       if (isNaN(when.getTime())) {
         return res.status(400).json({ error: "Invalid scheduledAt" });
       }

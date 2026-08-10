@@ -9,7 +9,7 @@ const notificationSchema = new mongoose.Schema(
     },
     audience: {
       type: String,
-      enum: ["all", "free", "monthly", "annual", "premium"],
+      enum: ["all", "free", "monthly", "pro", "annual", "premium"],
       required: true,
     },
     title: { type: String, required: true, trim: true },
