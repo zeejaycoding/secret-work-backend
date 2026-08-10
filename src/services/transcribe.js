@@ -74,14 +74,14 @@ async function transcribePodcast(mediaUrl) {
   const ext = extensionFromUrl(mediaUrl) || "mp3";
 
   const formData = new FormData();
-  formData.append(
-    "file",
+  formData.append("file",
     new Blob([audioBuffer], { type: MIME_BY_EXTENSION[ext] || "application/octet-stream" }),
     `podcast-media.${ext}`
   );
-  formData.append("model", "gpt-4o-mini-transcribe");
-  formData.append("response_format", "json");
-  formData.append("timestamp_granularities[]", "segment");
+  // whisper-1 + verbose_json is the model combination that produced the
+  // per-segment timestamps we ship; it is verified working in test-whisper-tmp.js.
+  formData.append("model", "whisper-1");
+  formData.append("response_format", "verbose_json");
 
   const response = await fetch(
     "https://api.openai.com/v1/audio/transcriptions",
