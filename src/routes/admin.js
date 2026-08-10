@@ -184,14 +184,9 @@ router.post("/reset-password", async (req, res) => {
 // ── Admin Forgot Password Reset (no current password required) ──
 router.post("/forgot-password-reset", async (req, res) => {
   try {
-    const { newPassword } = req.body;
-
-    if (!newPassword || newPassword.length < 8) {
-      return res.status(400).json({ error: "New password must be at least 8 characters" });
-    }
-
-    env.adminPassword = newPassword;
-    res.json({ success: true, message: "Admin password updated" });
+    // Disabled: public forgot-password-reset is a security risk.
+    // Require the authenticated admin reset flow instead via /reset-password.
+    return res.status(403).json({ error: "Endpoint disabled. Use authenticated reset." });
   } catch (error) {
     console.error("Forgot password reset error:", error);
     res.status(500).json({ error: "Password reset failed" });
@@ -2139,6 +2134,21 @@ router.get("/settings", adminAuth, async (req, res) => {
         ...DEFAULT_NOTIFICATIONS,
         ...(doc.notifications || {}),
       },
+      integrations: {
+        stripe: Boolean(env.stripeSecretKey),
+        sendgrid: Boolean(env.sendgridApiKey),
+        clerk: Boolean(env.clerkSecretKey),
+        cloudinary: Boolean(env.cloudinaryApiKey && env.cloudinaryApiSecret && env.cloudinaryCloudName),
+        openai: Boolean(env.openaiApiKey),
+      },
+      storage: {
+        // Storage details are environment-backed; precise usage requires external API calls.
+        usedBytes: null,
+        quotaBytes: null,
+      },
+      payments: {
+        currency: doc.payments?.currency || "USD",
+      },
     });
   } catch (error) {
     console.error("Get settings error:", error);
@@ -2201,6 +2211,11 @@ router.put("/settings", adminAuth, async (req, res) => {
         }
       }
       doc.notifications = { ...(doc.notifications || {}), ...clean };
+    }
+
+    if (req.body.payments && typeof req.body.payments === "object") {
+      const currency = typeof req.body.payments.currency === "string" && req.body.payments.currency.trim() ? req.body.payments.currency.trim() : doc.payments?.currency || "USD";
+      doc.payments = { ...(doc.payments || {}), currency };
     }
 
     await doc.save();
