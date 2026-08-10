@@ -17,6 +17,7 @@ const Plan = require("../models/Plan");
 const Role = require("../models/Role");
 const Notification = require("../models/Notification");
 const Setting = require("../models/Setting");
+const Follow = require("../models/Follow");
 const { DEFAULT_PLANS, formatPriceLabel } = require("../config/plans");
 const { DEFAULT_PERMISSIONS, DEFAULT_ROLES } = require("../config/roles");
 const { transcribePodcast } = require("../services/transcribe");
@@ -1285,6 +1286,10 @@ router.get("/coaches/:name", adminAuth, async (req, res) => {
         ) / 100
       : 0;
 
+    const followers = await Follow.countDocuments({
+      coach: { $regex: new RegExp(`^${escapeRegex(name)}$`, "i") },
+    });
+
     // Match a coach user account (role = "coach") so we can surface a real avatar if one exists
     const stripped = name.replace(/^coach\s+/i, "");
     const nameParts = stripped.split(/\s+/).filter(Boolean);
@@ -1312,7 +1317,7 @@ router.get("/coaches/:name", adminAuth, async (req, res) => {
       },
       stats: {
         drills: published.length,
-        followers: 0,
+        followers,
         avgCompletion,
         totalViews,
       },
