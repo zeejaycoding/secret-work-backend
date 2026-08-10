@@ -1070,15 +1070,34 @@ router.post("/drills", adminAuth, requirePermission("upload_content"), upload.fi
       return res.status(409).json({ error: "A drill with this title already exists" });
     }
     if (req.files?.thumbnail?.[0]) {
-      data.imageUrl = req.files.thumbnail[0].path;
+      const p = req.files.thumbnail[0].path || req.files.thumbnail[0].url || req.files.thumbnail[0].secure_url;
+      if (typeof p === "string" && (p.includes("/uploads/") || p.includes("\\uploads\\"))) {
+        // convert absolute path to server-relative URL
+        const idx = p.indexOf("/uploads/") >= 0 ? p.indexOf("/uploads/") : p.indexOf("\\uploads\\");
+        const rel = idx >= 0 ? p.slice(idx).replace(/\\\\/g, "/") : p;
+        data.imageUrl = rel;
+      } else {
+        data.imageUrl = p;
+      }
     }
     if (req.files?.video?.[0]) {
-      data.videoUrl = req.files.video[0].path;
+      const p = req.files.video[0].path || req.files.video[0].url || req.files.video[0].secure_url;
+      if (typeof p === "string" && (p.includes("/uploads/") || p.includes("\\uploads\\"))) {
+        const idx = p.indexOf("/uploads/") >= 0 ? p.indexOf("/uploads/") : p.indexOf("\\uploads\\");
+        const rel = idx >= 0 ? p.slice(idx).replace(/\\\\/g, "/") : p;
+        data.videoUrl = rel;
+      } else {
+        data.videoUrl = p;
+      }
     }
     const drill = await Drill.create(data);
     res.status(201).json({ drill });
   } catch (error) {
     console.error("Create drill error:", error);
+    if (error && error.name === "ValidationError") {
+      const messages = Object.values(error.errors || {}).map((e) => e.message);
+      return res.status(400).json({ error: "Validation failed", details: messages });
+    }
     res.status(500).json({ error: "Failed to create drill" });
   }
 });
