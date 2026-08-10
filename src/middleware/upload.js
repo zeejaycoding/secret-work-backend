@@ -2,57 +2,80 @@ const multer = require("multer");
 const { CloudinaryStorage } = require("multer-storage-cloudinary");
 const cloudinary = require("cloudinary").v2;
 const { env } = require("../config/env");
+const fs = require("fs");
+const path = require("path");
 
-cloudinary.config({
-  cloud_name: env.cloudinaryCloudName,
-  api_key: env.cloudinaryApiKey,
-  api_secret: env.cloudinaryApiSecret,
-});
+const hasCloudinary = !!(
+  env.cloudinaryCloudName && env.cloudinaryApiKey && env.cloudinaryApiSecret
+);
 
-const storage = new CloudinaryStorage({
-  cloudinary,
-  params: (req, file) => {
-    const field = file.fieldname;
-    const isVideo = field === "video";
-    const folder =
-      field === "image"
-        ? "pros"
-        : field === "media"
-        ? "podcasts/media"
-        : isVideo
-        ? "drills/videos"
-        : "drills/thumbnails";
-    const videoFormats = ["mp4", "mov", "m4v", "webm", "avi", "mkv"];
-    const imageFormats = ["jpg", "jpeg", "png", "webp", "gif"];
-    const mediaFormats = [
-      ...videoFormats,
-      "mp3",
-      "wav",
-      "m4a",
-      "aac",
-      "ogg",
-    ];
-    const formats =
-      field === "media"
-        ? mediaFormats
-        : isVideo
-        ? videoFormats
-        : imageFormats;
-    return {
-      folder,
-      resource_type: field === "image" ? "image" : "video",
-      allowed_formats: formats,
-      public_id: `${Date.now()}-${Math.round(Math.random() * 1e9)}`,
-    };
-  },
-});
+if (hasCloudinary) {
+  cloudinary.config({
+    cloud_name: env.cloudinaryCloudName,
+    api_key: env.cloudinaryApiKey,
+    api_secret: env.cloudinaryApiSecret,
+  });
+}
+
+function storageParamsForField(field) {
+  const isVideo = field === "video";
+  const folder =
+    field === "image"
+      ? "pros"
+      : field === "media"
+      ? "podcasts/media"
+      : isVideo
+      ? "drills/videos"
+      : "drills/thumbnails";
+  const videoFormats = ["mp4", "mov", "m4v", "webm", "avi", "mkv"];
+  const imageFormats = ["jpg", "jpeg", "png", "webp", "gif"];
+  const mediaFormats = [
+    ...videoFormats,
+    "mp3",
+    "wav",
+    "m4a",
+    "aac",
+    "ogg",
+  ];
+  const formats = field === "media" ? mediaFormats : isVideo ? videoFormats : imageFormats;
+  return { folder, resource_type: field === "image" ? "image" : "video", allowed_formats: formats };
+}
+
+let storage;
+if (hasCloudinary) {
+  storage = new CloudinaryStorage({
+    cloudinary,
+    params: (req, file) => {
+      const params = storageParamsForField(file.fieldname);
+      return {
+        folder: params.folder,
+        resource_type: params.resource_type,
+        allowed_formats: params.allowed_formats,
+        public_id: `${Date.now()}-${Math.round(Math.random() * 1e9)}`,
+      };
+    },
+  });
+} else {
+  // Fallback to local disk storage during development when Cloudinary not configured
+  const uploadsRoot = path.resolve(__dirname, "../uploads");
+  storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+      const params = storageParamsForField(file.fieldname);
+      const folder = path.join(uploadsRoot, params.folder.replace("/", path.sep));
+      fs.mkdirSync(folder, { recursive: true });
+      cb(null, folder);
+    },
+    filename: (req, file, cb) => {
+      const ext = path.extname(file.originalname) || "";
+      const name = `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`;
+      cb(null, name);
+    },
+  });
+}
 
 function fileFilter(req, file, cb) {
   if (file.fieldname === "media") {
-    if (
-      file.mimetype.startsWith("video/") ||
-      file.mimetype.startsWith("audio/")
-    ) {
+    if (file.mimetype.startsWith("video/") || file.mimetype.startsWith("audio/")) {
       return cb(null, true);
     }
     return cb(new Error("Podcast media must be a video or audio file"));
