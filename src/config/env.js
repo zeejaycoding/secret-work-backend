@@ -35,6 +35,7 @@ const env = {
     process.env.API_SECRET ||
     process.env.API_secret ||
     "",
+  cloudinaryUrl: process.env.CLOUDINARY_URL || process.env.CLOUDINARY || "",
   openaiApiKey: process.env.OPENAI_API_KEY || "",
 };
 

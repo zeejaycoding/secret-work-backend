@@ -6,15 +6,28 @@ const fs = require("fs");
 const path = require("path");
 
 const hasCloudinary = !!(
-  env.cloudinaryCloudName && env.cloudinaryApiKey && env.cloudinaryApiSecret
+  env.cloudinaryUrl || (env.cloudinaryCloudName && env.cloudinaryApiKey && env.cloudinaryApiSecret)
 );
 
 if (hasCloudinary) {
-  cloudinary.config({
-    cloud_name: env.cloudinaryCloudName,
-    api_key: env.cloudinaryApiKey,
-    api_secret: env.cloudinaryApiSecret,
-  });
+  if (env.cloudinaryUrl) {
+    try {
+      cloudinary.config({ cloudinary_url: env.cloudinaryUrl });
+    } catch (e) {
+      // fallback to explicit parts
+      cloudinary.config({
+        cloud_name: env.cloudinaryCloudName,
+        api_key: env.cloudinaryApiKey,
+        api_secret: env.cloudinaryApiSecret,
+      });
+    }
+  } else {
+    cloudinary.config({
+      cloud_name: env.cloudinaryCloudName,
+      api_key: env.cloudinaryApiKey,
+      api_secret: env.cloudinaryApiSecret,
+    });
+  }
 }
 
 function storageParamsForField(field) {
