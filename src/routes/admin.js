@@ -3,7 +3,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const { env } = require("../config/env");
-const { adminAuth } = require("../middleware/adminAuth");
+const { adminAuth, requirePermission } = require("../middleware/adminAuth");
 const { upload, deleteCloudinaryFile } = require("../middleware/upload");
 const { User } = require("../models/User");
 const Drill = require("../models/Drill");
@@ -135,7 +135,7 @@ router.post("/login", async (req, res) => {
     }
 
     const token = jwt.sign(
-      { email: env.adminEmail, role: "admin" },
+      { email: env.adminEmail, role: "admin", permissions: DEFAULT_ROLES.admin.permissions },
       env.adminJwtSecret,
       { expiresIn: "24h" }
     );
@@ -776,7 +776,7 @@ router.get("/roles", adminAuth, async (req, res) => {
 });
 
 // ── Roles & Permissions: Update ──
-router.put("/roles/:key", adminAuth, async (req, res) => {
+router.put("/roles/:key", adminAuth, requirePermission("manage_roles"), async (req, res) => {
   try {
     const key = String(req.params.key || "");
     const def = DEFAULT_ROLES[key];
@@ -837,7 +837,7 @@ router.put("/roles/:key", adminAuth, async (req, res) => {
 });
 
 // ── Roles & Permissions: Create ──
-router.post("/roles", adminAuth, async (req, res) => {
+router.post("/roles", adminAuth, requirePermission("manage_roles"), async (req, res) => {
   try {
     const label = String(req.body.label || "").trim();
     if (!label) {
@@ -931,7 +931,7 @@ router.get("/roles/:key", adminAuth, async (req, res) => {
 });
 
 // ── Roles & Permissions: Remove user from role ──
-router.delete("/roles/:key/users/:userId", adminAuth, async (req, res) => {
+router.delete("/roles/:key/users/:userId", adminAuth, requirePermission("manage_roles"), async (req, res) => {
   try {
     const key = String(req.params.key || "");
     const userId = String(req.params.userId || "");
@@ -1054,7 +1054,7 @@ router.get("/drills/:id", adminAuth, async (req, res) => {
 });
 
 // ── Content Library: Create Drill ──
-router.post("/drills", adminAuth, upload.fields([
+router.post("/drills", adminAuth, requirePermission("upload_content"), upload.fields([
   { name: "thumbnail", maxCount: 1 },
   { name: "video", maxCount: 1 },
 ]), async (req, res) => {
@@ -1099,7 +1099,7 @@ const DRILL_UPDATABLE_FIELDS = [
   "views",
 ];
 
-router.put("/drills/:id", adminAuth, upload.fields([
+router.put("/drills/:id", adminAuth, requirePermission("edit_content"), upload.fields([
   { name: "thumbnail", maxCount: 1 },
   { name: "video", maxCount: 1 },
 ]), async (req, res) => {
@@ -1134,7 +1134,7 @@ router.put("/drills/:id", adminAuth, upload.fields([
 });
 
 // ── Content Library: Delete Drill ──
-router.delete("/drills/:id", adminAuth, async (req, res) => {
+router.delete("/drills/:id", adminAuth, requirePermission("edit_content"), async (req, res) => {
   try {
     const drill = await Drill.findByIdAndDelete(req.params.id);
     if (!drill) {
@@ -1995,7 +1995,7 @@ router.get("/notifications", adminAuth, async (req, res) => {
   }
 });
 
-router.post("/notifications", adminAuth, async (req, res) => {
+router.post("/notifications", adminAuth, requirePermission("send_notifications"), async (req, res) => {
   try {
     const { channel, audience, title, message, status = "sent", scheduledAt } =
       req.body || {};
@@ -2086,7 +2086,7 @@ router.post("/notifications", adminAuth, async (req, res) => {
   }
 });
 
-router.post("/notifications/:id/send", adminAuth, async (req, res) => {
+router.post("/notifications/:id/send", adminAuth, requirePermission("send_notifications"), async (req, res) => {
   try {
     const notification = await Notification.findById(req.params.id);
     if (!notification) {
@@ -2114,7 +2114,7 @@ router.delete("/notifications/:id", adminAuth, async (req, res) => {
 });
 
 // ── Settings (branding + notification prefs) ──
-router.get("/settings", adminAuth, async (req, res) => {
+router.get("/settings", adminAuth, requirePermission("access_settings"), async (req, res) => {
   try {
     const doc = await getSettingsDoc();
     res.json({
@@ -2156,7 +2156,7 @@ router.get("/settings", adminAuth, async (req, res) => {
   }
 });
 
-router.put("/settings", adminAuth, async (req, res) => {
+router.put("/settings", adminAuth, requirePermission("access_settings"), async (req, res) => {
   try {
     const { branding, notifications } = req.body || {};
 
@@ -2237,5 +2237,35 @@ router.put("/settings", adminAuth, async (req, res) => {
     res.status(500).json({ error: "Failed to save settings" });
   }
 });
+
+// Upload a branding asset (logo or icon) and persist URL in settings
+router.post(
+  "/settings/upload",
+  adminAuth,
+  upload.single("file"),
+  async (req, res) => {
+    try {
+      const type = String(req.body.type || "").toLowerCase();
+      if (!req.file || !req.file.path) {
+        return res.status(400).json({ error: "No file uploaded" });
+      }
+      const url = req.file.path;
+      const doc = await getSettingsDoc();
+      doc.branding = doc.branding || {};
+      if (type === "logo") {
+        doc.branding.logoUrl = url;
+      } else if (type === "icon") {
+        doc.branding.iconUrl = url;
+      } else {
+        return res.status(400).json({ error: "Invalid type" });
+      }
+      await doc.save();
+      res.json({ url, branding: doc.branding });
+    } catch (error) {
+      console.error("Upload branding asset failed:", error);
+      res.status(500).json({ error: "Upload failed" });
+    }
+  }
+);
 
 module.exports = router;
