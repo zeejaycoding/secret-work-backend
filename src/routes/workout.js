@@ -1,4 +1,5 @@
 const { Router } = require("express");
+const mongoose = require("mongoose");
 const Drill = require("../models/Drill");
 const Pro = require("../models/Pro");
 const Follow = require("../models/Follow");
@@ -106,22 +107,74 @@ router.get("/quick", async (req, res) => {
   }
 });
 
-// ── Workouts: Coach Profile Detail (real published drills for that coach) ──
+// ── Workouts: Coach Profile Detail (real published drills for that pro/coach) ──
 router.get("/:id", async (req, res) => {
   try {
-    const coach = String(req.params.id || "").trim();
-    const pro = await Pro.findOne({
-      name: { $regex: `^${coach.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" },
-    });
+    const idOrName = String(req.params.id || "").trim();
 
-    const drills = await Drill.find({ status: "published", coach }).sort({
-      createdAt: 1,
-    });
+    let pro = null;
+
+    if (mongoose.isValidObjectId(idOrName)) {
+      pro = await Pro.findById(idOrName);
+    }
+
+    if (!pro) {
+      pro = await Pro.findOne({
+        name: {
+          $regex: `^${idOrName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+          $options: "i",
+        },
+      });
+    }
+
+    if (!pro) {
+      // Legacy: id is a plain coach name — return drills whose coach field matches
+      const legacyDrills = await Drill.find({
+        status: "published",
+        coach: idOrName,
+      }).sort({ createdAt: 1 });
+
+      if (legacyDrills.length === 0) {
+        return res.status(404).json({ error: "Workout not found" });
+      }
+
+      const followers = await Follow.countDocuments({ coach: idOrName });
+
+      return res.json({
+        workout: {
+          id: idOrName,
+          coachName: idOrName,
+          team: "Professional Trainer",
+          description: "",
+          image: legacyDrills[0].imageUrl || "",
+          stats: {
+            followers,
+            videos: legacyDrills.length,
+            yearsExp: 10,
+          },
+          videos: legacyDrills.map(toVideoShape),
+        },
+      });
+    }
+
+    const drills = await Drill.find({
+      status: "published",
+      $or: [
+        { proId: pro._id },
+        {
+          coach: {
+            $regex: `^${pro.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+            $options: "i",
+          },
+        },
+      ],
+    }).sort({ createdAt: 1 });
+
     if (drills.length === 0) {
       return res.status(404).json({ error: "Workout not found" });
     }
 
-    const followers = await Follow.countDocuments({ coach });
+    const followers = await Follow.countDocuments({ coach: pro.name });
 
     const stats = {
       followers,
@@ -131,11 +184,11 @@ router.get("/:id", async (req, res) => {
 
     res.json({
       workout: {
-        id: coach,
-        coachName: coach,
-        team: pro?.team || "Professional Trainer",
+        id: String(pro._id),
+        coachName: pro.name,
+        team: pro.team || "Professional Trainer",
         description: "",
-        image: drills[0].imageUrl || "",
+        image: drills[0].imageUrl || pro.imageUrl || "",
         stats,
         videos: drills.map(toVideoShape),
       },

@@ -1,4 +1,5 @@
 const { Router } = require("express");
+const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
@@ -990,7 +991,7 @@ router.get("/drills", adminAuth, async (req, res) => {
       filter.status = status;
     }
 
-    const drills = await Drill.find(filter).sort({ createdAt: -1 });
+    const drills = await Drill.find(filter).sort({ createdAt: -1 }).populate("proId", "name");
     res.json({ drills });
   } catch (error) {
     console.error("List drills error:", error);
@@ -1009,7 +1010,7 @@ function formatDuration(sec) {
 
 router.get("/drills/:id", adminAuth, async (req, res) => {
   try {
-    const drill = await Drill.findById(req.params.id);
+    const drill = await Drill.findById(req.params.id).populate("proId", "name");
     if (!drill) {
       return res.status(404).json({ error: "Drill not found" });
     }
@@ -1070,6 +1071,11 @@ router.post("/drills", adminAuth, requirePermission("upload_content"), upload.fi
       return res.status(400).json({ error: "Drill title is required" });
     }
     if (data.category) data.category = String(data.category).trim();
+    if (data.proId === "" || data.proId === "none" || data.proId === "null" || data.proId === undefined) {
+      delete data.proId;
+    } else if (data.proId && !mongoose.isValidObjectId(String(data.proId))) {
+      return res.status(400).json({ error: "Invalid pro athlete selected" });
+    }
     const existing = await Drill.findOne({ title: { $regex: `^${title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, $options: "i" } });
     if (existing) {
       return res.status(409).json({ error: "A drill with this title already exists" });
@@ -1112,6 +1118,7 @@ const DRILL_UPDATABLE_FIELDS = [
   "title",
   "description",
   "coach",
+  "proId",
   "category",
   "level",
   "equipment",
@@ -1136,6 +1143,14 @@ router.put("/drills/:id", adminAuth, requirePermission("edit_content"), upload.f
     const updates = {};
     for (const key of DRILL_UPDATABLE_FIELDS) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
+    }
+
+    if (updates.proId !== undefined) {
+      if (updates.proId === "" || updates.proId === "none" || updates.proId === "null") {
+        updates.proId = null;
+      } else if (!mongoose.isValidObjectId(String(updates.proId))) {
+        return res.status(400).json({ error: "Invalid pro athlete selected" });
+      }
     }
 
     if (req.files?.thumbnail?.[0]) {

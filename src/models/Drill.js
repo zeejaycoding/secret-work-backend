@@ -5,6 +5,7 @@ const drillSchema = new mongoose.Schema(
     title: { type: String, required: true, trim: true },
     description: { type: String, default: "" },
     coach: { type: String, trim: true },
+    proId: { type: mongoose.Schema.Types.ObjectId, ref: "Pro", default: null },
     category: {
       type: String,
       enum: ["Dribbling", "Shooting", "Defence", "Passing", "Fitness"],
