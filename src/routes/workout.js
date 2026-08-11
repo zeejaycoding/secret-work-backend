@@ -99,9 +99,18 @@ router.get("/quick", async (req, res) => {
       }
     }
 
-    const drills = await Drill.find(filter)
+    let drills = await Drill.find(filter)
       .sort({ createdAt: -1 })
       .limit(10);
+
+    // If strict filters (level/category) empty the coach's drills, fall back so
+    // the coach's published drills always appear in step 2 instead of placeholders.
+    if (drills.length === 0) {
+      const relaxed = { status: "published" };
+      if (filter.$or) relaxed.$or = filter.$or;
+      if (filter.category) relaxed.category = filter.category;
+      drills = await Drill.find(relaxed).sort({ createdAt: -1 }).limit(10);
+    }
 
     const mapped = drills.slice(0, 5).map((d) => ({
       id: String(d._id),
