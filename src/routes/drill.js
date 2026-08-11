@@ -5,6 +5,87 @@ const { authMiddleware } = require("../middleware/auth");
 
 const router = Router();
 
+function getWeekStart() {
+  const weekStart = new Date();
+  const currentDay = weekStart.getDay();
+  const offset = (currentDay + 6) % 7;
+
+  weekStart.setHours(0, 0, 0, 0);
+  weekStart.setDate(weekStart.getDate() - offset);
+
+  return weekStart;
+}
+
+function getWeeklyViews(drill, weekStart) {
+  const history = Array.isArray(drill.viewsHistory) ? drill.viewsHistory : [];
+
+  if (!history.length) {
+    return Number(drill.views || 0);
+  }
+
+  return history.reduce((total, entry) => {
+    const entryDate = entry?.date ? new Date(entry.date) : null;
+
+    if (!entryDate || Number.isNaN(entryDate.getTime())) {
+      return total;
+    }
+
+    if (entryDate < weekStart) {
+      return total;
+    }
+
+    return total + Number(entry.count || 0);
+  }, 0);
+}
+
+// ── Drills: Drill of the Week (most views this week) ──
+router.get("/drill-of-the-week", async (req, res) => {
+  try {
+    const drills = await Drill.find({ status: "published", videoUrl: { $ne: "" } })
+      .select("title coach videoUrl imageUrl views viewsHistory createdAt category level duration")
+      .sort({ createdAt: -1 })
+      .limit(100);
+
+    const weekStart = getWeekStart();
+    const rankedDrills = drills
+      .map((drill) => ({
+        ...drill.toObject(),
+        weeklyViews: getWeeklyViews(drill, weekStart),
+        totalViews: Number(drill.views || 0),
+      }))
+      .sort(
+        (a, b) =>
+          b.weeklyViews - a.weeklyViews ||
+          b.totalViews - a.totalViews ||
+          new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+      );
+
+    const topDrill = rankedDrills[0];
+
+    if (!topDrill) {
+      return res.json({ drill: null });
+    }
+
+    res.json({
+      drill: {
+        _id: topDrill._id,
+        title: topDrill.title,
+        coach: topDrill.coach,
+        videoUrl: topDrill.videoUrl,
+        imageUrl: topDrill.imageUrl,
+        views: topDrill.views,
+        category: topDrill.category,
+        level: topDrill.level,
+        duration: topDrill.duration,
+        weeklyViews: topDrill.weeklyViews,
+      },
+    });
+  } catch (error) {
+    console.error("Drill of the week error:", error);
+    res.status(500).json({ error: "Failed to fetch drill of the week" });
+  }
+});
+
 // ── Drills: Public List (published only) ──
 router.get("/", async (req, res) => {
   try {
