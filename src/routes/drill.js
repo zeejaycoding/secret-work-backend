@@ -1,5 +1,7 @@
 const { Router } = require("express");
 const Drill = require("../models/Drill");
+const Like = require("../models/Like");
+const { authMiddleware } = require("../middleware/auth");
 
 const router = Router();
 
@@ -76,6 +78,36 @@ router.post("/:id/view", async (req, res) => {
   } catch (error) {
     console.error("Record drill view error:", error);
     res.status(500).json({ error: "Failed to record drill view" });
+  }
+});
+
+// ── Drills: Toggle like for a drill (requires auth, per-user) ──
+router.post("/:id/like", authMiddleware, async (req, res) => {
+  try {
+    const drill = await Drill.findById(req.params.id);
+    if (!drill) return res.status(404).json({ error: "Drill not found" });
+
+    const existing = await Like.findOne({
+      user: req.auth.userId,
+      drill: drill._id,
+    });
+
+    let liked;
+    if (existing) {
+      await Like.deleteOne({ _id: existing._id });
+      await Drill.updateOne({ _id: drill._id }, { $inc: { likes: -1 } });
+      liked = false;
+    } else {
+      await Like.create({ user: req.auth.userId, drill: drill._id });
+      await Drill.updateOne({ _id: drill._id }, { $inc: { likes: 1 } });
+      liked = true;
+    }
+
+    const updated = await Drill.findById(drill._id).select("likes");
+    res.json({ liked, likes: updated ? updated.likes : 0 });
+  } catch (error) {
+    console.error("Toggle drill like error:", error);
+    res.status(500).json({ error: "Failed to update drill like" });
   }
 });
 
