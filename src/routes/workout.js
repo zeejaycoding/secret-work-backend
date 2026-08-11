@@ -20,6 +20,10 @@ function toVideoShape(drill) {
   };
 }
 
+function escapeRegExp(str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 // ── Workouts: Public Sections — real published drills grouped by their coach ──
 router.get("/", async (req, res) => {
   try {
@@ -59,8 +63,19 @@ router.get("/", async (req, res) => {
 // ── Workouts: Quick builder (level + categories → up to 5 drills) ──
 router.get("/quick", async (req, res) => {
   try {
-    const { level, categories } = req.query;
+    const { level, categories, coach } = req.query;
     const filter = { status: "published" };
+
+    if (coach) {
+      const name = String(coach).trim();
+      const escaped = escapeRegExp(name);
+      const pro = await Pro.findOne({
+        name: { $regex: `^${escaped}$`, $options: "i" },
+      });
+      const or = [{ coach: { $regex: `^${escaped}$`, $options: "i" } }];
+      if (pro) or.push({ proId: pro._id });
+      filter.$or = or;
+    }
 
     if (level && level !== "Random") {
       const levelMap = {
@@ -104,6 +119,69 @@ router.get("/quick", async (req, res) => {
   } catch (error) {
     console.error("Quick workout builder error:", error);
     res.status(500).json({ error: "Failed to build workout" });
+  }
+});
+
+// ── Workouts: Coach with the highest followers (for the Quick Workout card) ──
+router.get("/top-coach", async (req, res) => {
+  try {
+    const followCounts = await Follow.aggregate([
+      { $group: { _id: "$coach", count: { $sum: 1 } } },
+    ]);
+    const counts = followCounts.reduce((acc, row) => {
+      acc[String(row._id || "").trim()] = row.count;
+      return acc;
+    }, {});
+
+    const drills = await Drill.find({ status: "published" }).populate(
+      "proId",
+      "name"
+    );
+
+    const byCoach = new Map();
+    for (const drill of drills) {
+      const name =
+        String(drill.coach || "").trim() ||
+        (drill.proId && drill.proId.name ? drill.proId.name : "");
+      if (!name) continue;
+      if (!byCoach.has(name)) byCoach.set(name, []);
+      byCoach.get(name).push(drill);
+    }
+
+    const ranked = Array.from(byCoach.entries())
+      .map(([name, list]) => ({
+        name,
+        followers: counts[name] || 0,
+        drills: list,
+      }))
+      .sort(
+        (a, b) =>
+          b.followers - a.followers || b.drills.length - a.drills.length
+      );
+
+    if (ranked.length === 0) {
+      return res.status(404).json({ error: "No coach found" });
+    }
+
+    const top = ranked[0];
+    const videos = top.drills
+      .slice()
+      .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+      .map(toVideoShape);
+
+    res.json({
+      coachName: top.name,
+      followers: top.followers,
+      stats: {
+        followers: top.followers,
+        videos: videos.length,
+        yearsExp: 10,
+      },
+      videos,
+    });
+  } catch (error) {
+    console.error("Top coach error:", error);
+    res.status(500).json({ error: "Failed to fetch top coach" });
   }
 });
 
