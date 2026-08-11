@@ -18,6 +18,28 @@ router.get("/", async (req, res) => {
   }
 });
 
+// ── Drills: User's liked drills (auth) ──
+router.get("/liked", authMiddleware, async (req, res) => {
+  try {
+    const likes = await Like.find({ user: req.auth.userId }).select("drill");
+    res.json({ drillIds: likes.map((l) => String(l.drill)) });
+  } catch (error) {
+    console.error("List liked drills error:", error);
+    res.status(500).json({ error: "Failed to fetch liked drills" });
+  }
+});
+
+// ── Drills: Current user's liked drill ids (requires auth) ──
+router.get("/liked", authMiddleware, async (req, res) => {
+  try {
+    const likes = await Like.find({ user: req.auth.userId }).select("drill");
+    res.json({ drillIds: likes.map((l) => String(l.drill)) });
+  } catch (error) {
+    console.error("List liked drills error:", error);
+    res.status(500).json({ error: "Failed to fetch liked drills" });
+  }
+});
+
 // ── Drills: Public Get Single ──
 router.get("/:id", async (req, res) => {
   try {
