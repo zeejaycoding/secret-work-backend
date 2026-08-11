@@ -99,18 +99,9 @@ router.get("/quick", async (req, res) => {
       }
     }
 
-    let drills = await Drill.find(filter)
+    const drills = await Drill.find(filter)
       .sort({ createdAt: -1 })
       .limit(10);
-
-    // If strict filters (level/category) empty the coach's drills, fall back so
-    // the coach's published drills always appear in step 2 instead of placeholders.
-    if (drills.length === 0) {
-      const relaxed = { status: "published" };
-      if (filter.$or) relaxed.$or = filter.$or;
-      if (filter.category) relaxed.category = filter.category;
-      drills = await Drill.find(relaxed).sort({ createdAt: -1 }).limit(10);
-    }
 
     const mapped = drills.slice(0, 5).map((d) => ({
       id: String(d._id),
@@ -124,7 +115,18 @@ router.get("/quick", async (req, res) => {
       reps: "5 Reps",
     }));
 
-    res.json({ drills: mapped });
+    let availableLevels = [];
+    if (drills.length === 0 && filter.$or) {
+      const coachDrills = await Drill.find({
+        status: "published",
+        $or: filter.$or,
+      }).select("level");
+      availableLevels = Array.from(
+        new Set(coachDrills.map((d) => d.level).filter(Boolean))
+      );
+    }
+
+    res.json({ drills: mapped, availableLevels });
   } catch (error) {
     console.error("Quick workout builder error:", error);
     res.status(500).json({ error: "Failed to build workout" });
