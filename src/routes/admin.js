@@ -4,7 +4,12 @@ const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const { env } = require("../config/env");
 const { adminAuth, requirePermission } = require("../middleware/adminAuth");
-const { upload, deleteCloudinaryFile } = require("../middleware/upload");
+const {
+  upload,
+  cloudinary,
+  deleteCloudinaryFile,
+  hasCloudinary,
+} = require("../middleware/upload");
 const { User } = require("../models/User");
 const Drill = require("../models/Drill");
 const Category = require("../models/Category");
@@ -2161,7 +2166,7 @@ router.get("/settings", adminAuth, requirePermission("access_settings"), async (
         openai: Boolean(env.openaiApiKey),
       },
       storage: {
-        // Storage details are environment-backed; precise usage requires external API calls.
+        configured: hasCloudinary,
         usedBytes: null,
         quotaBytes: null,
       },
@@ -2174,6 +2179,57 @@ router.get("/settings", adminAuth, requirePermission("access_settings"), async (
     res.status(500).json({ error: "Failed to fetch settings" });
   }
 });
+
+// ── Settings: Cloudinary storage usage (live) ──
+router.get(
+  "/settings/storage",
+  adminAuth,
+  requirePermission("access_settings"),
+  async (_req, res) => {
+    try {
+      if (!hasCloudinary) {
+        return res.json({ configured: false, storage: null });
+      }
+      const usage = await cloudinary.api.usage();
+      let byType = null;
+      try {
+        const [images, videos, raws] = await Promise.all(
+          ["image", "video", "raw"].map((rt) =>
+            cloudinary.search.expression(`resource_type:${rt}`).max_results(0).execute()
+          )
+        );
+        byType = {
+          images: images?.total_count || 0,
+          videos: videos?.total_count || 0,
+          raws: raws?.total_count || 0,
+        };
+      } catch (_e) {
+        byType = null;
+      }
+      res.json({
+        configured: true,
+        cloudName: env.cloudinaryCloudName,
+        plan: usage?.plan || null,
+        storage: {
+          usedBytes: usage?.storage?.usage || 0,
+          bandwidthBytes: usage?.bandwidth?.usage || 0,
+          creditsUsed: usage?.credits?.usage || 0,
+          creditsLimit: usage?.credits?.limit || 0,
+          creditsPercent: usage?.credits?.used_percent || 0,
+          objects: usage?.objects?.usage || usage?.resources || 0,
+          byType,
+          updatedAt: usage?.last_updated || null,
+        },
+      });
+    } catch (error) {
+      console.error("Cloudinary usage error:", error);
+      res.status(500).json({
+        configured: true,
+        error: error?.message || "Failed to fetch Cloudinary usage",
+      });
+    }
+  }
+);
 
 router.put("/settings", adminAuth, requirePermission("access_settings"), async (req, res) => {
   try {

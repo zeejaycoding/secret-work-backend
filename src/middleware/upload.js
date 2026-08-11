@@ -51,7 +51,8 @@ function storageParamsForField(field) {
     "ogg",
   ];
   const formats = field === "media" ? mediaFormats : isVideo ? videoFormats : imageFormats;
-  return { folder, resource_type: field === "image" ? "image" : "video", allowed_formats: formats };
+  const isImageField = field === "image" || field === "thumbnail";
+  return { folder, resource_type: isImageField ? "image" : "video", allowed_formats: formats };
 }
 
 let storage;
@@ -135,4 +136,4 @@ function deleteCloudinaryFile(url) {
     .catch(() => {});
 }
 
-module.exports = { upload, cloudinary, deleteCloudinaryFile };
+module.exports = { upload, cloudinary, deleteCloudinaryFile, hasCloudinary };
