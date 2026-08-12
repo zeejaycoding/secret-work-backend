@@ -10,6 +10,26 @@ const { upsertTransaction } = require("../services/transactions");
 
 const stripe = new Stripe(env.stripeSecretKey);
 
+let cachedAnnualCouponId = null;
+
+async function getOrCreateAnnualDiscountCoupon() {
+  if (cachedAnnualCouponId) return cachedAnnualCouponId;
+  try {
+    const coupon = await stripe.coupons.create({
+      amount_off: 500,
+      currency: "usd",
+      duration: "once",
+      description: "$5 off annual subscription (discount code)",
+    });
+    cachedAnnualCouponId = coupon.id;
+    console.log("Discount coupon created:", coupon.id);
+    return coupon.id;
+  } catch (error) {
+    console.error("Failed to create discount coupon:", error.message);
+    return null;
+  }
+}
+
 const PLAN_PRICES = {
   monthly: { amount: 950, interval: "month", label: "Monthly Pro" },
   annually: { amount: 7900, interval: "year", label: "Annual Pro" },
@@ -83,7 +103,7 @@ const checkoutRouter = Router();
 
 checkoutRouter.post("/checkout", authMiddleware, async (req, res) => {
   try {
-    const { plan } = req.body;
+    const { plan, discountCode } = req.body;
 
     if (!plan || !PLAN_PRICES[plan]) {
       res.status(400).json({ error: "Invalid plan. Choose 'monthly' or 'annually'" });
@@ -110,6 +130,14 @@ checkoutRouter.post("/checkout", authMiddleware, async (req, res) => {
       await user.save();
     }
 
+    let discountId = null;
+    if (discountCode) {
+      const couponId = await getOrCreateAnnualDiscountCoupon();
+      if (couponId) {
+        discountId = couponId;
+      }
+    }
+
     const session = await stripe.checkout.sessions.create({
       customer: customerId,
       mode: "subscription",
@@ -130,7 +158,8 @@ checkoutRouter.post("/checkout", authMiddleware, async (req, res) => {
       ],
       success_url: `${env.frontendUrl.split(",").pop()}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${env.frontendUrl.split(",").pop()}/payment-cancel`,
-      metadata: { userId: user._id.toString(), plan },
+      metadata: { userId: user._id.toString(), plan, discountCode },
+      ...(discountId ? { discounts: [{ coupon: discountId }] } : {}),
     });
 
     res.json({ url: session.url, sessionId: session.id });

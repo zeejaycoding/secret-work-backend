@@ -15,6 +15,7 @@ const transactionSchema = new mongoose.Schema(
     stripeInvoiceId: { type: String, default: "" },
     stripeChargeId: { type: String, default: "" },
     stripeSubscriptionId: { type: String, default: "" },
+    discountCode: { type: String, default: "" },
     date: { type: Date, default: Date.now },
   },
   { timestamps: true }

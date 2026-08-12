@@ -17,6 +17,7 @@ const drillRoutes = require("./routes/drill");
 const workoutRoutes = require("./routes/workout");
 const planRoutes = require("./routes/plans");
 const settingsRoutes = require("./routes/settings");
+const chatRoutes = require("./routes/chat");
 const Plan = require("./models/Plan");
 const Notification = require("./models/Notification");
 const { deliverCampaign } = require("./services/notifications");
@@ -75,6 +76,7 @@ app.use("/api/drills", drillRoutes);
 app.use("/api/workouts", workoutRoutes);
 app.use("/api/plans", planRoutes);
 app.use("/api/settings", settingsRoutes);
+app.use("/api/chat", chatRoutes);
 
 app.get("/payment-success", (_req, res) => {
   res.send(`<!DOCTYPE html><html><head><title>Payment Successful</title><style>body{background:#000;color:#fff;font-family:sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}div{text-align:center}h1{color:#E50914}p{color:#aaa}</style></head><body><div><h1>Payment Successful!</h1><p>You can close this tab and return to the app.</p><p>Your subscription will be activated automatically.</p></div></body></html>`);
