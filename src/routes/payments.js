@@ -4,6 +4,7 @@ const Stripe = require("stripe");
 const { User } = require("../models/User");
 const Plan = require("../models/Plan");
 const Transaction = require("../models/Transaction");
+const DiscountCode = require("../models/DiscountCode");
 const { env } = require("../config/env");
 const { authMiddleware } = require("../middleware/auth");
 const { upsertTransaction } = require("../services/transactions");
@@ -390,7 +391,18 @@ webhookRouter.post(
                   amount: (session.amount_total || 0) / 100,
                   status: "success",
                   date: new Date(),
+                  discountCode: session.metadata?.discountCode || "",
                 });
+
+                if (session.metadata?.discountCode) {
+                  const dc = await DiscountCode.findOne({ code: session.metadata.discountCode.toUpperCase() });
+                  if (dc && !dc.usedBy.includes(user._id)) {
+                    dc.usedCount += 1;
+                    dc.usedBy.push(user._id);
+                    await dc.save();
+                    console.log(`Discount code ${dc.code} used by ${user.email} (count: ${dc.usedCount})`);
+                  }
+                }
               } catch (txErr) {
                 console.error("Record checkout transaction error:", txErr.message || txErr);
               }
@@ -532,4 +544,51 @@ webhookRouter.post(
   }
 );
 
-module.exports = { checkoutRouter, webhookRouter };
+const validateDiscountCodeRouter = Router();
+
+validateDiscountCodeRouter.post("/validate", authMiddleware, async (req, res) => {
+  try {
+    const { code, plan } = req.body;
+
+    if (!code || !plan) {
+      return res.status(400).json({ error: "Code and plan are required" });
+    }
+
+    if (plan !== "annually") {
+      return res.status(400).json({ valid: false, message: "Discount code only applies to annual plan" });
+    }
+
+    const dc = await DiscountCode.findOne({
+      code: code.toUpperCase().trim(),
+      active: true,
+    });
+
+    if (!dc) {
+      return res.status(400).json({ valid: false, message: "Invalid discount code" });
+    }
+
+    if (dc.expiresAt && new Date(dc.expiresAt) < new Date()) {
+      return res.status(400).json({ valid: false, message: "Discount code has expired" });
+    }
+
+    if (dc.usageLimit && dc.usedCount >= dc.usageLimit) {
+      return res.status(400).json({ valid: false, message: "Discount code has been fully redeemed" });
+    }
+
+    if (dc.usedBy && dc.usedBy.includes(req.auth.userId)) {
+      return res.status(400).json({ valid: false, message: "Discount code already applied to your account" });
+    }
+
+    return res.json({
+      valid: true,
+      code: dc.code,
+      discountAmount: dc.discountAmount,
+      message: `Discount ${dc.discountAmount} off applied to annual plan`,
+    });
+  } catch (error) {
+    console.error("Discount code validation error:", error.message);
+    res.status(500).json({ error: "Failed to validate discount code" });
+  }
+});
+
+module.exports = { checkoutRouter, webhookRouter, validateDiscountCodeRouter };

@@ -10,7 +10,7 @@ const { DEFAULT_PLANS } = require("./config/plans");
 const { initSocket } = require("./socket");
 const authRoutes = require("./routes/auth");
 const userRoutes = require("./routes/user");
-const { checkoutRouter, webhookRouter } = require("./routes/payments");
+const { checkoutRouter, webhookRouter, validateDiscountCodeRouter } = require("./routes/payments");
 const adminRoutes = require("./routes/admin");
 const podcastRoutes = require("./routes/podcast");
 const drillRoutes = require("./routes/drill");
@@ -19,6 +19,7 @@ const planRoutes = require("./routes/plans");
 const settingsRoutes = require("./routes/settings");
 const chatRoutes = require("./routes/chat");
 const Plan = require("./models/Plan");
+const DiscountCode = require("./models/DiscountCode");
 const Notification = require("./models/Notification");
 const { deliverCampaign } = require("./services/notifications");
 
@@ -70,6 +71,7 @@ app.get("/api/health", (_req, res) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/payments", checkoutRouter);
+app.use("/api/payments/discount", validateDiscountCodeRouter);
 app.use("/api/admin", adminRoutes);
 app.use("/api/podcasts", podcastRoutes);
 app.use("/api/drills", drillRoutes);
@@ -116,6 +118,25 @@ async function seedPlans() {
   }
 }
 
+async function seedDiscountCodes() {
+  const discountCodes = [
+    { code: "COOP20", discountAmount: 5, applicablePlan: "annual" },
+    { code: "REDSHOE85", discountAmount: 5, applicablePlan: "annual" },
+    { code: "CA10", discountAmount: 5, applicablePlan: "annual" },
+    { code: "DESTBO", discountAmount: 5, applicablePlan: "annual" },
+    { code: "JKENT20", discountAmount: 5, applicablePlan: "annual" },
+    { code: "LW3", discountAmount: 5, applicablePlan: "annual" },
+  ];
+
+  for (const cd of discountCodes) {
+    const existing = await DiscountCode.findOne({ code: cd.code });
+    if (!existing) {
+      await DiscountCode.create({ ...cd, active: true });
+      console.log(`Discount code seeded: ${cd.code}`);
+    }
+  }
+}
+
 async function processScheduledNotifications() {
   try {
     const due = await Notification.find({
@@ -141,6 +162,7 @@ async function processScheduledNotifications() {
 async function start() {
   await connectDB();
   await seedPlans();
+  await seedDiscountCodes();
 
   httpServer.listen(env.port, () => {
     console.log(`Server running on port ${env.port} in ${env.nodeEnv} mode`);

@@ -1,7 +1,4 @@
 const mongoose = require("mongoose");
-const fs = require("fs");
-const path = require("path");
-const { env } = require("./config/env");
 const Plan = require("./models/Plan");
 const DiscountCode = require("./models/DiscountCode");
 
@@ -23,22 +20,23 @@ async function upsertPlan(key, defaults) {
     plan = await Plan.create({ ...defaults, key });
     console.log(`Plan created: ${key}`);
   } else {
+    let changed = false;
     if (!plan.label || plan.label === "") {
       plan.label = defaults.label;
-      await plan.save();
-      console.log(`Plan updated label: ${key} -> ${defaults.label}`);
+      changed = true;
     }
     if (!plan.price || plan.price.amount === 0) {
       plan.price = { amount: defaults.price.amount, interval: defaults.price.interval };
-      await plan.save();
-      console.log(`Plan updated price: ${key} -> $${defaults.price.amount}.${defaults.price.interval}`);
+      changed = true;
     }
     if (!plan.benefits || plan.benefits.length === 0) {
       plan.benefits = defaults.benefits;
-      await plan.save();
-      console.log(`Plan updated benefits: ${key} -> ${defaults.benefits.length} benefits`);
+      changed = true;
     }
-    if (plan._id) {
+    if (changed) {
+      await plan.save();
+      console.log(`Plan updated: ${key}`);
+    } else {
       console.log(`Plan exists: ${key} — already configured`);
     }
   }
@@ -58,21 +56,20 @@ async function seedDiscountCodes() {
   for (const cd of codes) {
     const existing = await DiscountCode.findOne({ code: cd.code });
     if (!existing) {
-      const dc = new DiscountCode({ ...cd, active: true });
-      await dc.save();
+      await DiscountCode.create({ ...cd, active: true });
       console.log(`Discount code created: ${cd.code} ($${cd.discountAmount} off annual)`);
     } else {
       console.log(`Discount code already exists: ${cd.code}`);
     }
   }
-  console.log(`Total discount codes: ${await DiscountCode.countDocuments({ applicablePlan: "annual" })}`);
+  const total = await DiscountCode.countDocuments({ applicablePlan: "annual" });
+  console.log(`Total discount codes: ${total}`);
 }
 
 async function main() {
   await connectDB();
-  console.log("=== PSS: Product Subscription Script ===\n");
+  console.log("=== PSS: Product Subscription Script ===");
 
-  // Seed plans
   console.log("\n--- Planning ---");
   const planDefaults = {
     free: {
@@ -116,14 +113,12 @@ async function main() {
     await upsertPlan(key, defaults);
   }
 
-  // Seed discount codes
   console.log("\n--- Discount Codes ---");
   await seedDiscountCodes();
 
-  // Ensure webhook is configured for discount code tracking
   console.log("\n=== PSS Complete ===");
-  console.log("Run again to confirm idempotency:");
-  await connectDB();
+  await mongoose.disconnect();
+  console.log("Disconnected from MongoDB");
 }
 
 main().catch((err) => {
