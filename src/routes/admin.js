@@ -936,6 +936,28 @@ router.get("/roles/:key", adminAuth, async (req, res) => {
   }
 });
 
+// ── Roles & Permissions: Delete custom role ──
+router.delete("/roles/:key", adminAuth, requirePermission("manage_roles"), async (req, res) => {
+  try {
+    const key = String(req.params.key || "");
+    const def = DEFAULT_ROLES[key];
+    if (def) {
+      return res.status(400).json({ error: "Cannot delete a default role" });
+    }
+    const doc = await Role.findOneAndDelete({ key });
+    if (!doc) {
+      return res.status(404).json({ error: "Role not found" });
+    }
+    // Demote users with this role to member
+    await User.updateMany({ role: key }, { role: "member" });
+    await User.updateMany({ assignedRoles: key }, { $pull: { assignedRoles: key } });
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Delete role error:", error);
+    res.status(500).json({ error: "Failed to delete role" });
+  }
+});
+
 // ── Roles & Permissions: Remove user from role ──
 router.delete("/roles/:key/users/:userId", adminAuth, requirePermission("manage_roles"), async (req, res) => {
   try {
