@@ -1533,7 +1533,9 @@ router.delete("/categories/:id", adminAuth, async (req, res) => {
   try {
     const category = await Category.findByIdAndDelete(req.params.id);
     if (!category) return res.status(404).json({ error: "Category not found" });
-    res.json({ success: true });
+    // Delete all drills in this category
+    const result = await Drill.deleteMany({ category: category.name });
+    res.json({ success: true, deletedDrills: result.deletedCount });
   } catch (error) {
     console.error("Delete category error:", error);
     res.status(500).json({ error: "Failed to delete category" });
