@@ -268,98 +268,126 @@ async function sendChatReplyEmail({ toEmail, userName, userQuery, reply }) {
       `https://secret-work-backend.onrender.com`,
     ].join("\n"),
     html: `<!DOCTYPE html>
-<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="x-apple-disable-message-reformatting" />
   <title>Secret Work - Support Reply</title>
 </head>
-<body style="margin:0;padding:0;background-color:#F4F4F5;font-family:Arial,Helvetica,sans-serif;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#F4F4F5;padding:40px 16px;">
-    <tr>
-      <td align="center">
-        <table role="presentation" width="520" cellpadding="0" cellspacing="0" style="max-width:520px;width:100%;">
+<body style="margin:0;padding:0;background-color:#F4F4F5;font-family:'Helvetica Neue',Arial,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#F4F4F5;">
 
-          <!-- Header with brand -->
+    <!-- Hidden preheader -->
+    <tr>
+      <td style="display:none;font-size:1px;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;">
+        Hi ${firstName}, we've replied to your support message.
+      </td>
+    </tr>
+
+    <!-- Red gradient hero -->
+    <tr>
+      <td style="background-image:linear-gradient(135deg,#E50914 0%,#B0060F 60%,#8A040B 100%);background-color:#E50914;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
           <tr>
-            <td align="center" style="padding-bottom:24px;">
+            <td align="center" style="padding:48px 16px 56px 16px;">
               <table role="presentation" cellpadding="0" cellspacing="0">
                 <tr>
-                  <td style="width:48px;height:48px;border-radius:24px;background-color:#E50914;text-align:center;vertical-align:middle;">
-                    <span style="color:#fff;font-size:20px;font-weight:700;line-height:48px;display:inline-block;font-family:Arial,sans-serif;">SW</span>
-                  </td>
-                  <td style="padding-left:12px;">
-                    <span style="color:#1A1A1A;font-size:20px;font-weight:700;font-family:Arial,sans-serif;">Secret Work</span>
+                  <td style="width:60px;height:60px;border-radius:30px;background-color:#FFFFFF;text-align:center;vertical-align:middle;box-shadow:0 8px 24px rgba(0,0,0,0.25);">
+                    <span style="color:#E50914;font-size:26px;font-weight:800;line-height:60px;display:inline-block;font-family:Verdana,Arial,sans-serif;">SW</span>
                   </td>
                 </tr>
               </table>
+              <p style="margin:16px 0 0 0;color:#FFFFFF;font-size:22px;font-weight:800;letter-spacing:0.5px;font-family:Verdana,Arial,sans-serif;">Secret Work</p>
+              <p style="margin:6px 0 0 0;color:#FFD5D8;font-size:13px;font-weight:500;letter-spacing:0.08em;text-transform:uppercase;font-family:Arial,sans-serif;">Support Team</p>
             </td>
           </tr>
+        </table>
+      </td>
+    </tr>
 
-          <!-- White card -->
+    <!-- Body -->
+    <tr>
+      <td align="center" style="padding:0 16px;">
+        <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%;">
+
+          <!-- White card (pulled up over the hero) -->
           <tr>
-            <td style="background-color:#FFFFFF;border-radius:12px;padding:40px 36px;border:1px solid #E5E5E5;">
+            <td style="background-color:#FFFFFF;border-radius:14px;padding:40px 40px 32px 40px;margin-top:-28px;box-shadow:0 12px 40px rgba(0,0,0,0.08);">
 
+              <!-- Greeting -->
               <tr>
-                <td style="padding-bottom:16px;">
-                  <h1 style="margin:0;color:#1A1A1A;font-size:22px;font-weight:700;font-family:Arial,sans-serif;">We got back to you</h1>
-                </td>
-              </tr>
-
-              <tr>
-                <td style="padding-bottom:24px;">
-                  <p style="margin:0;color:#525252;font-size:15px;line-height:1.6;font-family:Arial,sans-serif;">
-                    Hi <strong style="color:#1A1A1A;">${firstName}</strong>, thanks for reaching out to
-                    <strong style="color:#1A1A1A;">Secret Work</strong> support. Here's the answer to your question.
+                <td style="padding-bottom:22px;">
+                  <h1 style="margin:0;color:#1A1A1A;font-size:23px;font-weight:800;font-family:Verdana,Arial,sans-serif;">Hi ${firstName}, 👋</h1>
+                  <p style="margin:10px 0 0 0;color:#525252;font-size:15px;line-height:1.65;font-family:Arial,sans-serif;">
+                    Thanks for reaching out to <strong style="color:#1A1A1A;">Secret Work</strong>.
+                    We've reviewed your message and here's our answer.
                   </p>
                 </td>
               </tr>
 
-              <!-- Original query -->
+              <!-- Your question -->
               <tr>
-                <td style="padding-bottom:24px;">
-                  <p style="margin:0 0 8px 0;color:#71717A;font-size:12px;letter-spacing:1.5px;text-transform:uppercase;font-family:Arial,sans-serif;">Your question</p>
+                <td style="padding-bottom:26px;">
+                  <p style="margin:0 0 9px 0;color:#8A8A90;font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;font-family:Arial,sans-serif;">You asked</p>
                   <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
                     <tr>
-                      <td style="background-color:#FAFAFA;border:1px solid #E5E5E5;border-left:4px solid #E50914;border-radius:8px;padding:16px 18px;">
-                        <p style="margin:0;color:#525252;font-size:14px;line-height:1.6;font-family:Arial,sans-serif;">${safeQuery}</p>
+                      <td style="background-color:#F8F8FA;border:1px solid #ECECEF;border-left:4px solid #E50914;border-radius:10px;padding:16px 18px;">
+                        <p style="margin:0;color:#4B4B55;font-size:14px;line-height:1.6;font-family:Arial,sans-serif;">${safeQuery}</p>
                       </td>
                     </tr>
                   </table>
                 </td>
               </tr>
 
-              <!-- Reply -->
+              <!-- Our reply -->
               <tr>
-                <td style="padding-bottom:24px;">
-                  <p style="margin:0 0 8px 0;color:#71717A;font-size:12px;letter-spacing:1.5px;text-transform:uppercase;font-family:Arial,sans-serif;">Our reply</p>
+                <td style="padding-bottom:30px;">
                   <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
                     <tr>
-                      <td style="background-color:#FEF2F2;border:1px solid #FECACA;border-radius:8px;padding:18px;">
-                        <p style="margin:0;color:#1A1A1A;font-size:15px;line-height:1.7;font-family:Arial,sans-serif;">${safeReply}</p>
+                      <td style="background-color:#FFF5F6;border:1px solid #FDE3E4;border-radius:12px;padding:20px;">
+                        <table role="presentation" cellpadding="0" cellspacing="0">
+                          <tr>
+                            <td style="width:36px;height:36px;border-radius:18px;background-color:#E50914;text-align:center;vertical-align:middle;">
+                              <span style="color:#fff;font-size:14px;font-weight:700;line-height:36px;display:inline-block;font-family:Verdana,Arial,sans-serif;">SW</span>
+                            </td>
+                            <td style="padding-left:12px;vertical-align:middle;">
+                              <p style="margin:0;color:#1A1A1A;font-size:14px;font-weight:800;font-family:Verdana,Arial,sans-serif;">Secret Work Support</p>
+                              <p style="margin:2px 0 0 0;color:#A1A1AA;font-size:11px;font-family:Arial,sans-serif;">Reply to your message</p>
+                            </td>
+                          </tr>
+                        </table>
+                        <p style="margin:14px 0 0 0;color:#26262C;font-size:15px;line-height:1.7;font-family:Arial,sans-serif;">${safeReply}</p>
                       </td>
                     </tr>
                   </table>
+                </td>
+              </tr>
+
+              <!-- CTA -->
+              <tr>
+                <td align="center" style="padding-bottom:26px;">
+                  <a href="https://secret-work-backend.onrender.com" style="display:inline-block;background-color:#E50914;color:#FFFFFF;text-decoration:none;font-size:15px;font-weight:700;font-family:Verdana,Arial,sans-serif;padding:15px 34px;border-radius:9px;box-shadow:0 6px 18px rgba(229,9,20,0.30);">Open the App</a>
                 </td>
               </tr>
 
               <!-- Divider -->
               <tr>
-                <td style="padding-bottom:20px;">
+                <td style="padding-bottom:22px;">
                   <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
                     <tr>
-                      <td style="border-top:1px solid #E5E5E5;font-size:0;line-height:0;">&nbsp;</td>
+                      <td style="border-top:1px solid #ECECEF;font-size:0;line-height:0;">&nbsp;</td>
                     </tr>
                   </table>
                 </td>
               </tr>
 
-              <!-- Helpful note -->
+              <!-- Follow up note -->
               <tr>
                 <td>
-                  <p style="margin:0;color:#71717A;font-size:13px;line-height:1.6;font-family:Arial,sans-serif;">
-                    Need anything else? Open <strong style="color:#525252;">Live Chat</strong> in the app anytime and
-                    we'll be happy to help. Or just reply to this email.
+                  <p style="margin:0;color:#6B6B73;font-size:13px;line-height:1.65;font-family:Arial,sans-serif;">
+                    Still have questions? Open <strong style="color:#3B3B43;">Live Chat</strong> in the app anytime
+                    — our team is always here to help. You can also reply directly to this email.
                   </p>
                 </td>
               </tr>
@@ -369,12 +397,16 @@ async function sendChatReplyEmail({ toEmail, userName, userQuery, reply }) {
 
           <!-- Footer -->
           <tr>
-            <td align="center" style="padding-top:24px;padding-bottom:16px;">
+            <td align="center" style="padding:26px 16px 34px 16px;">
               <p style="margin:0;color:#A1A1AA;font-size:12px;line-height:1.6;font-family:Arial,sans-serif;">
-                This is a reply to a support message you sent through the Secret Work app.
+                You received this email because you sent a message through the Secret Work app.
               </p>
-              <p style="margin:4px 0 0 0;color:#D4D4D8;font-size:11px;font-family:Arial,sans-serif;">
-                Secret Work | secret-work-backend.onrender.com | ${env.emailFrom}
+              <p style="margin:8px 0 0 0;color:#B9B9C2;font-size:12px;font-family:Arial,sans-serif;">
+                <a href="mailto:${env.emailFrom}" style="color:#B9B9C2;text-decoration:none;">${env.emailFrom}</a>
+                &nbsp;·&nbsp; secret-work-backend.onrender.com
+              </p>
+              <p style="margin:6px 0 0 0;color:#D4D4D8;font-size:11px;font-family:Arial,sans-serif;">
+                Secret Work &copy; ${new Date().getFullYear()}
               </p>
             </td>
           </tr>
