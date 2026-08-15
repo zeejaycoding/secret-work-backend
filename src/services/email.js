@@ -230,4 +230,175 @@ async function sendNotificationEmail({ toEmail, title, message }) {
   }
 }
 
-module.exports = { sendPasswordResetEmail, sendNotificationEmail };
+function escapeHtml(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+async function sendChatReplyEmail({ toEmail, userName, userQuery, reply }) {
+  ensureEmailConfigured();
+
+  const firstName = String(userName || "there").trim().split(/\s+/)[0] || "there";
+  const safeQuery = escapeHtml(userQuery);
+  const safeReply = escapeHtml(reply);
+
+  const msg = {
+    to: toEmail,
+    from: { email: env.emailFrom, name: "Secret Work" },
+    replyTo: { email: env.emailFrom, name: "Secret Work" },
+    subject: "We replied to your support message",
+    text: [
+      `Hi ${firstName},`,
+      ``,
+      `Thanks for reaching out to Secret Work support. Here is our reply:`,
+      ``,
+      `You asked:`,
+      userQuery,
+      ``,
+      `Our reply:`,
+      reply,
+      ``,
+      `If you need anything else, just open Live Chat in the app and we'll be happy to help.`,
+      ``,
+      `Secret Work Support`,
+      `https://secret-work-backend.onrender.com`,
+    ].join("\n"),
+    html: `<!DOCTYPE html>
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Secret Work - Support Reply</title>
+</head>
+<body style="margin:0;padding:0;background-color:#F4F4F5;font-family:Arial,Helvetica,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#F4F4F5;padding:40px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="520" cellpadding="0" cellspacing="0" style="max-width:520px;width:100%;">
+
+          <!-- Header with brand -->
+          <tr>
+            <td align="center" style="padding-bottom:24px;">
+              <table role="presentation" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="width:48px;height:48px;border-radius:24px;background-color:#E50914;text-align:center;vertical-align:middle;">
+                    <span style="color:#fff;font-size:20px;font-weight:700;line-height:48px;display:inline-block;font-family:Arial,sans-serif;">SW</span>
+                  </td>
+                  <td style="padding-left:12px;">
+                    <span style="color:#1A1A1A;font-size:20px;font-weight:700;font-family:Arial,sans-serif;">Secret Work</span>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- White card -->
+          <tr>
+            <td style="background-color:#FFFFFF;border-radius:12px;padding:40px 36px;border:1px solid #E5E5E5;">
+
+              <tr>
+                <td style="padding-bottom:16px;">
+                  <h1 style="margin:0;color:#1A1A1A;font-size:22px;font-weight:700;font-family:Arial,sans-serif;">We got back to you</h1>
+                </td>
+              </tr>
+
+              <tr>
+                <td style="padding-bottom:24px;">
+                  <p style="margin:0;color:#525252;font-size:15px;line-height:1.6;font-family:Arial,sans-serif;">
+                    Hi <strong style="color:#1A1A1A;">${firstName}</strong>, thanks for reaching out to
+                    <strong style="color:#1A1A1A;">Secret Work</strong> support. Here's the answer to your question.
+                  </p>
+                </td>
+              </tr>
+
+              <!-- Original query -->
+              <tr>
+                <td style="padding-bottom:24px;">
+                  <p style="margin:0 0 8px 0;color:#71717A;font-size:12px;letter-spacing:1.5px;text-transform:uppercase;font-family:Arial,sans-serif;">Your question</p>
+                  <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                    <tr>
+                      <td style="background-color:#FAFAFA;border:1px solid #E5E5E5;border-left:4px solid #E50914;border-radius:8px;padding:16px 18px;">
+                        <p style="margin:0;color:#525252;font-size:14px;line-height:1.6;font-family:Arial,sans-serif;">${safeQuery}</p>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+
+              <!-- Reply -->
+              <tr>
+                <td style="padding-bottom:24px;">
+                  <p style="margin:0 0 8px 0;color:#71717A;font-size:12px;letter-spacing:1.5px;text-transform:uppercase;font-family:Arial,sans-serif;">Our reply</p>
+                  <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                    <tr>
+                      <td style="background-color:#FEF2F2;border:1px solid #FECACA;border-radius:8px;padding:18px;">
+                        <p style="margin:0;color:#1A1A1A;font-size:15px;line-height:1.7;font-family:Arial,sans-serif;">${safeReply}</p>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+
+              <!-- Divider -->
+              <tr>
+                <td style="padding-bottom:20px;">
+                  <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                    <tr>
+                      <td style="border-top:1px solid #E5E5E5;font-size:0;line-height:0;">&nbsp;</td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+
+              <!-- Helpful note -->
+              <tr>
+                <td>
+                  <p style="margin:0;color:#71717A;font-size:13px;line-height:1.6;font-family:Arial,sans-serif;">
+                    Need anything else? Open <strong style="color:#525252;">Live Chat</strong> in the app anytime and
+                    we'll be happy to help. Or just reply to this email.
+                  </p>
+                </td>
+              </tr>
+
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td align="center" style="padding-top:24px;padding-bottom:16px;">
+              <p style="margin:0;color:#A1A1AA;font-size:12px;line-height:1.6;font-family:Arial,sans-serif;">
+                This is a reply to a support message you sent through the Secret Work app.
+              </p>
+              <p style="margin:4px 0 0 0;color:#D4D4D8;font-size:11px;font-family:Arial,sans-serif;">
+                Secret Work | secret-work-backend.onrender.com | ${env.emailFrom}
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`,
+    headers: {
+      "List-Unsubscribe": `<mailto:${env.emailFrom}?subject=unsubscribe>`,
+      "X-Mailer": "SecretWork",
+    },
+  };
+
+  try {
+    const [response] = await sgMail.send(msg);
+    console.log("SendGrid chat reply sent to:", toEmail, "Status:", response.statusCode);
+  } catch (err) {
+    const sgError = err?.response?.body?.errors?.[0]?.message || err.message || err;
+    console.error("SendGrid chat reply error:", sgError);
+    throw new Error(`Email send failed: ${sgError}`);
+  }
+}
+
+module.exports = { sendPasswordResetEmail, sendNotificationEmail, sendChatReplyEmail };

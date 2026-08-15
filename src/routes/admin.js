@@ -12,6 +12,7 @@ const {
   hasCloudinary,
 } = require("../middleware/upload");
 const { User } = require("../models/User");
+const { ChatMessage } = require("../models/ChatMessage");
 const Drill = require("../models/Drill");
 const Category = require("../models/Category");
 const Program = require("../models/Program");
@@ -35,6 +36,7 @@ const {
 } = require("../services/notifications");
 const {
   sendPasswordResetEmail,
+  sendChatReplyEmail,
 } = require("../services/email");
 const {
   getSettingsDoc,
@@ -2173,6 +2175,193 @@ router.delete("/notifications/:id", adminAuth, async (req, res) => {
   } catch (error) {
     console.error("Delete notification error:", error);
     res.status(500).json({ error: "Failed to delete notification" });
+  }
+});
+
+// ── Support Queries (Live Chat) ──
+router.get("/support/queries", adminAuth, async (req, res) => {
+  try {
+    const messages = await ChatMessage.find({}).sort({ createdAt: -1 }).limit(1000);
+
+    const byRoom = {};
+    for (const m of messages) {
+      if (!m.room) continue;
+      if (!byRoom[m.room]) {
+        byRoom[m.room] = { room: m.room, userMessages: [], agentReplies: 0, lastAt: m.createdAt };
+      }
+      const entry = byRoom[m.room];
+      if (new Date(m.createdAt) > new Date(entry.lastAt)) entry.lastAt = m.createdAt;
+      if (m.isAgent) {
+        entry.agentReplies += 1;
+      } else {
+        entry.userMessages.push(m);
+      }
+    }
+
+    const userIds = Object.values(byRoom).map((r) =>
+      String(r.room).replace(/^support:/, "")
+    );
+    const users = await User.find({ _id: { $in: userIds } }).select(
+      "firstName lastName email avatarUrl status"
+    );
+    const userById = {};
+    users.forEach((u) => (userById[String(u._id)] = u));
+
+    const queries = Object.values(byRoom).map((r) => {
+      const uid = String(r.room).replace(/^support:/, "");
+      const user = userById[uid] || null;
+      const sorted = [...r.userMessages].sort(
+        (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+      );
+      const lastUserMsg = sorted[0];
+      const hasNew = r.userMessages.some((m) => m.status !== "replied");
+      return {
+        room: r.room,
+        userId: uid,
+        user: user
+          ? {
+              _id: user._id,
+              name: [user.firstName, user.lastName].filter(Boolean).join(" "),
+              email: user.email,
+              avatarUrl: user.avatarUrl,
+              status: user.status,
+            }
+          : { _id: uid, name: "Unknown user", email: "", avatarUrl: null, status: "active" },
+        lastQuery: lastUserMsg ? lastUserMsg.text : "",
+        lastAt: r.lastAt,
+        messageCount: r.userMessages.length,
+        agentReplies: r.agentReplies,
+        status: hasNew ? "new" : "replied",
+      };
+    });
+
+    queries.sort((a, b) => new Date(b.lastAt) - new Date(a.lastAt));
+    res.json({ queries });
+  } catch (error) {
+    console.error("List support queries error:", error);
+    res.status(500).json({ error: "Failed to fetch support queries" });
+  }
+});
+
+router.get("/support/queries/:room", adminAuth, async (req, res) => {
+  try {
+    const room = String(req.params.room || "");
+    if (!room.startsWith("support:")) {
+      return res.status(400).json({ error: "Invalid room" });
+    }
+
+    const messages = await ChatMessage.find({ room }).sort({ createdAt: 1 });
+    const uid = room.replace("support:", "");
+    const user = await User.findById(uid).select(
+      "firstName lastName email avatarUrl status subscriptionTier role"
+    );
+
+    res.json({
+      room,
+      user: user
+        ? {
+            _id: user._id,
+            name: [user.firstName, user.lastName].filter(Boolean).join(" "),
+            email: user.email,
+            avatarUrl: user.avatarUrl,
+            status: user.status,
+            subscriptionTier: user.subscriptionTier,
+            role: user.role,
+          }
+        : null,
+      messages: messages.map((m) => ({
+        _id: m._id,
+        text: m.text,
+        isAgent: m.isAgent,
+        status: m.status,
+        createdAt: m.createdAt,
+      })),
+    });
+  } catch (error) {
+    console.error("Get support query error:", error);
+    res.status(500).json({ error: "Failed to fetch support query" });
+  }
+});
+
+router.post("/support/queries/:room/reply", adminAuth, async (req, res) => {
+  try {
+    const room = String(req.params.room || "");
+    const reply = String(req.body?.reply || "").trim();
+
+    if (!room.startsWith("support:")) {
+      return res.status(400).json({ error: "Invalid room" });
+    }
+    if (!reply) {
+      return res.status(400).json({ error: "Reply is required" });
+    }
+
+    const uid = room.replace("support:", "");
+    const user = await User.findById(uid);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const agentMsg = await ChatMessage.create({
+      room,
+      from: null,
+      to: user._id,
+      text: reply,
+      isAgent: true,
+    });
+
+    await ChatMessage.updateMany(
+      { room, isAgent: false, status: { $ne: "replied" } },
+      { $set: { status: "replied" } }
+    );
+
+    const lastUserMsg = await ChatMessage.findOne({ room, isAgent: false })
+      .sort({ createdAt: -1 })
+      .select("text");
+    const userName = [user.firstName, user.lastName].filter(Boolean).join(" ");
+
+    try {
+      await sendChatReplyEmail({
+        toEmail: user.email,
+        userName,
+        userQuery: lastUserMsg ? lastUserMsg.text : "",
+        reply,
+      });
+    } catch (emailError) {
+      console.error("Chat reply email failed:", emailError.message || emailError);
+      return res.status(502).json({
+        error: "Reply was recorded but the email could not be sent. Please check email configuration.",
+      });
+    }
+
+    try {
+      const { getIO } = require("../socket");
+      const io = getIO();
+      io.to(room).emit("chat:new", {
+        _id: agentMsg._id,
+        room,
+        from: null,
+        text: reply,
+        isAgent: true,
+        status: "replied",
+        createdAt: agentMsg.createdAt,
+      });
+    } catch (e) {
+      /* socket not ready — email already delivered */
+    }
+
+    res.json({
+      success: true,
+      message: `Reply sent to ${user.email}`,
+      reply: {
+        _id: agentMsg._id,
+        text: reply,
+        isAgent: true,
+        createdAt: agentMsg.createdAt,
+      },
+    });
+  } catch (error) {
+    console.error("Send support reply error:", error);
+    res.status(500).json({ error: "Failed to send reply" });
   }
 });
 

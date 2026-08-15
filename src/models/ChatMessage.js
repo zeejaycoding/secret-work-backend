@@ -15,6 +15,12 @@ const chatMessageSchema = new mongoose.Schema(
     },
     text: { type: String, required: true, trim: true },
     isAgent: { type: Boolean, default: false },
+    status: {
+      type: String,
+      enum: ["new", "replied"],
+      default: "new",
+      index: true,
+    },
   },
   { timestamps: true }
 );
