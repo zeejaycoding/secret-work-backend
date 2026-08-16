@@ -2,6 +2,7 @@ const { Router } = require("express");
 const bcrypt = require("bcryptjs");
 const { User } = require("../models/User");
 const { authMiddleware } = require("../middleware/auth");
+const { upload, deleteCloudinaryFile } = require("../middleware/upload");
 const Pro = require("../models/Pro");
 const Drill = require("../models/Drill");
 const Program = require("../models/Program");
@@ -78,6 +79,58 @@ router.patch("/me", async (req, res) => {
   } catch (error) {
     console.error("Update user error:", error);
     res.status(500).json({ error: "Failed to update user" });
+  }
+});
+
+// ── Profile picture: upload (set/replace) ──
+router.post("/me/avatar", upload.single("profile"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No profile image uploaded" });
+    }
+
+    const user = await User.findById(req.auth.userId);
+    if (!user) {
+      deleteCloudinaryFile(req.file.path);
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // Replace the existing avatar, removing the previous file.
+    if (user.avatarUrl) {
+      deleteCloudinaryFile(user.avatarUrl);
+    }
+
+    user.avatarUrl = req.file.path;
+    await user.save();
+
+    res.json({ user });
+  } catch (error) {
+    console.error("Upload avatar error:", error);
+    if (req.file && req.file.path) deleteCloudinaryFile(req.file.path);
+    res.status(500).json({ error: "Failed to upload profile image" });
+  }
+});
+
+// ── Profile picture: delete ──
+router.delete("/me/avatar", async (req, res) => {
+  try {
+    const user = await User.findById(req.auth.userId);
+
+    if (!user) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    if (user.avatarUrl) {
+      deleteCloudinaryFile(user.avatarUrl);
+      user.avatarUrl = undefined;
+      await user.save();
+    }
+
+    res.json({ user });
+  } catch (error) {
+    console.error("Delete avatar error:", error);
+    res.status(500).json({ error: "Failed to delete profile image" });
   }
 });
 

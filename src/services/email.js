@@ -3,20 +3,30 @@ const { env } = require("../config/env");
 
 function ensureEmailConfigured() {
   if (!env.sendgridApiKey) {
-    throw new Error("GRID_API_KEY is missing");
+    throw new Error("SENDGRID_API_KEY is missing");
   }
+
+  const fromEmail = String(env.emailFrom || "").trim();
+  if (fromEmail && /@gmail\.com|@yahoo\.com|@outlook\.com|@hotmail\.com/i.test(fromEmail)) {
+    console.warn(
+      "Warning: using a free email provider as the SendGrid sender can reduce inbox placement. Set EMAIL_FROM to a verified custom-domain address like noreply@yourdomain.com."
+    );
+  }
+
   sgMail.setApiKey(env.sendgridApiKey);
 }
 
 async function sendPasswordResetEmail({ toEmail, otpCode }) {
   ensureEmailConfigured();
 
-  const fromName = "Secret Work";
+  const fromName = env.emailFromName || "Secret Work";
+  const fromEmail = String(env.emailFrom || "noreply@secretwork.app").trim();
+  const replyEmail = String(env.replyToEmail || env.emailFrom || fromEmail).trim();
 
   const msg = {
     to: toEmail,
-    from: { email: env.emailFrom, name: fromName },
-    replyTo: { email: env.emailFrom, name: fromName },
+    from: { email: fromEmail, name: fromName },
+    replyTo: { email: replyEmail, name: fromName },
     subject: "Reset your Secret Work password",
     text: [
       `Hi,`,
@@ -131,7 +141,7 @@ async function sendPasswordResetEmail({ toEmail, otpCode }) {
                 This is a transactional email sent by Secret Work.
               </p>
               <p style="margin:4px 0 0 0;color:#D4D4D8;font-size:11px;font-family:Arial,sans-serif;">
-                Secret Work | secret-work-backend.onrender.com | ${env.emailFrom}
+                Secret Work | secret-work-backend.onrender.com | ${fromEmail}
               </p>
             </td>
           </tr>
@@ -143,8 +153,10 @@ async function sendPasswordResetEmail({ toEmail, otpCode }) {
 </body>
 </html>`,
     headers: {
-      "List-Unsubscribe": `<mailto:${env.emailFrom}?subject=unsubscribe>`,
+      "List-Unsubscribe": `<mailto:${replyEmail}?subject=unsubscribe>`,
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
       "X-Mailer": "SecretWork",
+      "List-ID": "Secret Work <secretwork>",
     },
   };
 
@@ -161,10 +173,14 @@ async function sendPasswordResetEmail({ toEmail, otpCode }) {
 async function sendNotificationEmail({ toEmail, title, message }) {
   ensureEmailConfigured();
 
+  const fromName = env.emailFromName || "Secret Work";
+  const fromEmail = String(env.emailFrom || "noreply@secretwork.app").trim();
+  const replyEmail = String(env.replyToEmail || env.emailFrom || fromEmail).trim();
+
   const msg = {
     to: toEmail,
-    from: { email: env.emailFrom, name: "Secret Work" },
-    replyTo: { email: env.emailFrom, name: "Secret Work" },
+    from: { email: fromEmail, name: fromName },
+    replyTo: { email: replyEmail, name: fromName },
     subject: title,
     text: message,
     html: `<!DOCTYPE html>
@@ -245,11 +261,14 @@ async function sendChatReplyEmail({ toEmail, userName, userQuery, reply }) {
   const firstName = String(userName || "there").trim().split(/\s+/)[0] || "there";
   const safeQuery = escapeHtml(userQuery);
   const safeReply = escapeHtml(reply);
+  const fromName = env.emailFromName || "Secret Work";
+  const fromEmail = String(env.emailFrom || "noreply@secretwork.app").trim();
+  const replyEmail = String(env.replyToEmail || env.emailFrom || fromEmail).trim();
 
   const msg = {
     to: toEmail,
-    from: { email: env.emailFrom, name: "Secret Work" },
-    replyTo: { email: env.emailFrom, name: "Secret Work" },
+    from: { email: fromEmail, name: fromName },
+    replyTo: { email: replyEmail, name: fromName },
     subject: "We replied to your support message",
     text: [
       `Hi ${firstName},`,
@@ -402,7 +421,7 @@ async function sendChatReplyEmail({ toEmail, userName, userQuery, reply }) {
                 You received this email because you sent a message through the Secret Work app.
               </p>
               <p style="margin:8px 0 0 0;color:#B9B9C2;font-size:12px;font-family:Arial,sans-serif;">
-                <a href="mailto:${env.emailFrom}" style="color:#B9B9C2;text-decoration:none;">${env.emailFrom}</a>
+                <a href="mailto:${replyEmail}" style="color:#B9B9C2;text-decoration:none;">${replyEmail}</a>
                 &nbsp;·&nbsp; secret-work-backend.onrender.com
               </p>
               <p style="margin:6px 0 0 0;color:#D4D4D8;font-size:11px;font-family:Arial,sans-serif;">
@@ -418,8 +437,10 @@ async function sendChatReplyEmail({ toEmail, userName, userQuery, reply }) {
 </body>
 </html>`,
     headers: {
-      "List-Unsubscribe": `<mailto:${env.emailFrom}?subject=unsubscribe>`,
+      "List-Unsubscribe": `<mailto:${replyEmail}?subject=unsubscribe>`,
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
       "X-Mailer": "SecretWork",
+      "List-ID": "Secret Work <secretwork>",
     },
   };
 

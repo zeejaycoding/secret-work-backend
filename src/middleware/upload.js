@@ -35,6 +35,8 @@ function storageParamsForField(field) {
   const folder =
     field === "image"
       ? "pros"
+      : field === "profile"
+      ? "profile"
       : field === "media"
       ? "podcasts/media"
       : isVideo
@@ -51,7 +53,7 @@ function storageParamsForField(field) {
     "ogg",
   ];
   const formats = field === "media" ? mediaFormats : isVideo ? videoFormats : imageFormats;
-  const isImageField = field === "image" || field === "thumbnail";
+  const isImageField = field === "image" || field === "profile" || field === "thumbnail";
   return { folder, resource_type: isImageField ? "image" : "video", allowed_formats: formats };
 }
 
