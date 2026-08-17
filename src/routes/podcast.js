@@ -1,10 +1,26 @@
 const { Router } = require("express");
 const Podcast = require("../models/Podcast");
+const { authMiddleware } = require("../middleware/auth");
+const { User } = require("../models/User");
 
 const router = Router();
 
-// ── Podcasts: Public List (published only) ──
-router.get("/", async (req, res) => {
+const proOnly = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.auth.userId).select("subscriptionTier");
+    if (!user) return res.status(401).json({ error: "User not found" });
+    if (user.subscriptionTier !== "pro" && user.subscriptionTier !== "premium") {
+      return res.status(403).json({ error: "Pro subscription required", requiresPro: true });
+    }
+    next();
+  } catch (error) {
+    console.error("Pro check error:", error);
+    res.status(500).json({ error: "Failed to verify subscription" });
+  }
+};
+
+// ── Podcasts: List (published only, pro only) ──
+router.get("/", authMiddleware, proOnly, async (req, res) => {
   try {
     const podcasts = await Podcast.find({ status: "Published" }).sort({
       createdAt: -1,
@@ -16,8 +32,8 @@ router.get("/", async (req, res) => {
   }
 });
 
-// ── Podcasts: Public Get Single ──
-router.get("/:id", async (req, res) => {
+// ── Podcasts: Get Single (pro only) ──
+router.get("/:id", authMiddleware, proOnly, async (req, res) => {
   try {
     const podcast = await Podcast.findById(req.params.id);
     if (!podcast) return res.status(404).json({ error: "Podcast not found" });
@@ -28,8 +44,8 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-// ── Podcasts: Increment plays ──
-router.post("/:id/play", async (req, res) => {
+// ── Podcasts: Increment plays (pro only) ──
+router.post("/:id/play", authMiddleware, proOnly, async (req, res) => {
   try {
     const podcast = await Podcast.findById(req.params.id);
     if (!podcast) return res.status(404).json({ error: "Podcast not found" });
@@ -42,8 +58,8 @@ router.post("/:id/play", async (req, res) => {
   }
 });
 
-// ── Podcasts: Report playback progress (watch time + completion) ──
-router.post("/:id/progress", async (req, res) => {
+// ── Podcasts: Report playback progress (pro only) ──
+router.post("/:id/progress", authMiddleware, proOnly, async (req, res) => {
   try {
     const podcast = await Podcast.findById(req.params.id);
     if (!podcast) return res.status(404).json({ error: "Podcast not found" });
