@@ -203,20 +203,33 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
       product_data: { name: selectedPlan.label },
     });
 
-    const subscription = await stripe.subscriptions.create({
-      customer: customerId,
-      items: [{ price: price.id }],
-      payment_behavior: "default_incomplete",
-      payment_settings: { save_default_payment_method: "on_subscription" },
-      expand: ["latest_invoice.payment_intent"],
-      metadata: { userId: user._id.toString(), plan, discountCode: discountCode || "" },
-    });
+    let subscription;
+    try {
+      subscription = await stripe.subscriptions.create({
+        customer: customerId,
+        items: [{ price: price.id }],
+        payment_behavior: "default_incomplete",
+        payment_settings: { save_default_payment_method: "on_subscription" },
+        expand: ["latest_invoice.payment_intent"],
+        metadata: { userId: user._id.toString(), plan, discountCode: discountCode || "" },
+      });
+    } catch (subErr) {
+      console.error("Stripe subscriptions.create error:", subErr.message);
+      console.error("Stripe error code:", subErr.code);
+      console.error("Stripe error type:", subErr.type);
+      return res.status(500).json({ error: subErr.message || "Failed to create subscription" });
+    }
 
     const paymentIntent = subscription.latest_invoice?.payment_intent;
 
+    console.log("Subscription created:", subscription.id);
+    console.log("latest_invoice:", subscription.latest_invoice?.id);
+    console.log("payment_intent:", paymentIntent?.id);
+    console.log("client_secret:", paymentIntent?.client_secret ? "present" : "MISSING");
+
     res.json({
       subscriptionId: subscription.id,
-      clientSecret: paymentIntent?.client_secret,
+      clientSecret: paymentIntent?.client_secret || null,
     });
   } catch (error) {
     console.error("Create subscription error:", error.message || error);
