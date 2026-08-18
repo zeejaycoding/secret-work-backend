@@ -198,18 +198,21 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
 
     let subscription;
     try {
+      const product = await stripe.products.create({
+        name: selectedPlan.label,
+        metadata: { userId: user._id.toString(), plan },
+      });
+
+      const price = await stripe.prices.create({
+        currency: "usd",
+        unit_amount: unitAmount,
+        recurring: { interval: selectedPlan.interval },
+        product: product.id,
+      });
+
       subscription = await stripe.subscriptions.create({
         customer: customerId,
-        items: [
-          {
-            price_data: {
-              currency: "usd",
-              unit_amount: unitAmount,
-              recurring: { interval: selectedPlan.interval },
-              product: selectedPlan.label,
-            },
-          },
-        ],
+        items: [{ price: price.id }],
         payment_behavior: "default_incomplete",
         payment_settings: { save_default_payment_method: "on_subscription" },
         expand: ["latest_invoice.payment_intent"],
