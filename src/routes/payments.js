@@ -155,6 +155,39 @@ checkoutRouter.post("/checkout", authMiddleware, async (req, res) => {
 });
 
 // ── Native PaymentSheet subscription (Apple Pay / Google Pay / Card) ──
+// Step 1: Create a SetupIntent so PaymentSheet can collect the payment method
+checkoutRouter.post("/setup-intent", authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.auth.userId);
+    if (!user) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    let customerId = user.stripeCustomerId;
+    if (!customerId) {
+      const customer = await stripe.customers.create({
+        email: user.email,
+        metadata: { userId: user._id.toString() },
+      });
+      customerId = customer.id;
+      user.stripeCustomerId = customerId;
+      await user.save();
+    }
+
+    const setupIntent = await stripe.setupIntents.create({
+      customer: customerId,
+      automatic_payment_methods: { enabled: true },
+    });
+
+    res.json({ clientSecret: setupIntent.client_secret, customerId });
+  } catch (error) {
+    console.error("Setup intent error:", error.message || error);
+    res.status(500).json({ error: "Failed to create setup intent" });
+  }
+});
+
+// Step 2: After PaymentSheet success, create the subscription with the saved payment method
 checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
   try {
     const { plan, discountCode } = req.body;
@@ -170,18 +203,12 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
       return;
     }
 
-    const selectedPlan = await getPlanConfig(plan);
-
-    let customerId = user.stripeCustomerId;
-    if (!customerId) {
-      const customer = await stripe.customers.create({
-        email: user.email,
-        metadata: { userId: user._id.toString() },
-      });
-      customerId = customer.id;
-      user.stripeCustomerId = customerId;
-      await user.save();
+    if (!user.stripeCustomerId) {
+      res.status(400).json({ error: "No payment method on file" });
+      return;
     }
+
+    const selectedPlan = await getPlanConfig(plan);
 
     let unitAmount = selectedPlan.amount;
     if (discountCode && plan === "annually") {
@@ -196,85 +223,79 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
       }
     }
 
-    let subscription;
-    try {
-      const product = await stripe.products.create({
-        name: selectedPlan.label,
-        metadata: { userId: user._id.toString(), plan },
-      });
-
-      const price = await stripe.prices.create({
-        currency: "usd",
-        unit_amount: unitAmount,
-        recurring: { interval: selectedPlan.interval },
-        product: product.id,
-      });
-
-      subscription = await stripe.subscriptions.create({
-        customer: customerId,
-        items: [{ price: price.id }],
-        payment_behavior: "default_incomplete",
-        payment_settings: { save_default_payment_method: "on_subscription" },
-        expand: ["latest_invoice.payment_intent"],
-        metadata: { userId: user._id.toString(), plan, discountCode: discountCode || "" },
-      });
-    } catch (subErr) {
-      console.error("Stripe subscriptions.create error:", subErr.message);
-      console.error("Stripe error code:", subErr.code);
-      console.error("Stripe error type:", subErr.type);
-      return res.status(500).json({ error: subErr.message || "Failed to create subscription" });
-    }
-
-    const paymentIntent = subscription.latest_invoice?.payment_intent;
-
-    console.log("Subscription created:", subscription.id);
-    console.log("latest_invoice:", subscription.latest_invoice?.id);
-    console.log("invoice_status:", subscription.latest_invoice?.status);
-    console.log("payment_intent:", paymentIntent?.id);
-    console.log("client_secret:", paymentIntent?.client_secret ? "present" : "MISSING");
-
-    // If clientSecret is null, the invoice may have been auto-paid
-    // (e.g., customer has existing payment method from previous subscription)
-    if (!paymentIntent?.client_secret) {
-      const invoiceStatus = subscription.latest_invoice?.status;
-      if (invoiceStatus === "paid") {
-        // Invoice already paid — subscription is active, no payment needed
-        console.log("Invoice already paid — no payment required");
-        return res.json({
-          subscriptionId: subscription.id,
-          clientSecret: null,
-          alreadyPaid: true,
-        });
-      }
-      // Invoice is open/draft but no payment_intent — try to retrieve it
-      if (subscription.latest_invoice?.id) {
-        try {
-          const invoice = await stripe.invoices.retrieve(subscription.latest_invoice.id);
-          if (invoice.payment_intent) {
-            const pi = typeof invoice.payment_intent === "string"
-              ? await stripe.paymentIntents.retrieve(invoice.payment_intent)
-              : invoice.payment_intent;
-            console.log("Retrieved payment_intent from invoice:", pi.id);
-            return res.json({
-              subscriptionId: subscription.id,
-              clientSecret: pi.client_secret,
-            });
-          }
-        } catch (invErr) {
-          console.error("Failed to retrieve invoice payment_intent:", invErr.message);
-        }
-      }
-    }
-
-    res.json({
-      subscriptionId: subscription.id,
-      clientSecret: paymentIntent?.client_secret || null,
+    // Check for existing active subscription
+    const existingSubs = await stripe.subscriptions.list({
+      customer: user.stripeCustomerId,
+      status: "active",
+      limit: 1,
     });
+    if (existingSubs.data.length > 0) {
+      const existing = existingSubs.data[0];
+      console.log("User already has active subscription:", existing.id);
+      user.subscriptionTier = "pro";
+      user.stripeSubscriptionId = existing.id;
+      user.billingInterval = toBillingInterval(getInterval(existing));
+      if (existing.current_period_end) {
+        user.subscriptionExpiry = new Date(existing.current_period_end * 1000);
+      }
+      await user.save();
+      return res.json({ subscriptionId: existing.id, alreadyPaid: true });
+    }
+
+    const product = await stripe.products.create({
+      name: selectedPlan.label,
+      metadata: { userId: user._id.toString(), plan },
+    });
+
+    const price = await stripe.prices.create({
+      currency: "usd",
+      unit_amount: unitAmount,
+      recurring: { interval: selectedPlan.interval },
+      product: product.id,
+    });
+
+    const subscription = await stripe.subscriptions.create({
+      customer: user.stripeCustomerId,
+      items: [{ price: price.id }],
+      default_payment_method: await getDefaultPaymentMethod(user.stripeCustomerId),
+      metadata: { userId: user._id.toString(), plan, discountCode: discountCode || "" },
+    });
+
+    console.log("Subscription created:", subscription.id, "status:", subscription.status);
+
+    // Subscription should be active since we charged the saved payment method
+    if (subscription.status === "active") {
+      user.subscriptionTier = "pro";
+      user.stripeSubscriptionId = subscription.id;
+      user.billingInterval = toBillingInterval(getInterval(subscription));
+      if (subscription.current_period_end) {
+        user.subscriptionExpiry = new Date(subscription.current_period_end * 1000);
+      }
+      const item = subscription.items?.data?.[0];
+      const priceAmount = item?.price?.unit_amount || item?.plan?.amount;
+      if (priceAmount != null) user.subscriptionAmount = priceAmount / 100;
+      await user.save();
+    }
+
+    res.json({ subscriptionId: subscription.id, alreadyPaid: subscription.status === "active" });
   } catch (error) {
     console.error("Create subscription error:", error.message || error);
-    res.status(500).json({ error: "Failed to create subscription" });
+    res.status(500).json({ error: error.message || "Failed to create subscription" });
   }
 });
+
+async function getDefaultPaymentMethod(customerId) {
+  try {
+    const paymentMethods = await stripe.paymentMethods.list({
+      customer: customerId,
+      type: "card",
+      limit: 1,
+    });
+    return paymentMethods.data[0]?.id || null;
+  } catch {
+    return null;
+  }
+}
 
 checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
   try {
