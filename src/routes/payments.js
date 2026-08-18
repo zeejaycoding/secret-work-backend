@@ -112,7 +112,6 @@ checkoutRouter.post("/checkout", authMiddleware, async (req, res) => {
     }
 
     let unitAmount = selectedPlan.amount;
-    let discountApplied = 0;
     if (discountCode && plan === "annually") {
       const dc = await DiscountCode.findOne({
         code: discountCode.toUpperCase().trim(),
@@ -121,7 +120,6 @@ checkoutRouter.post("/checkout", authMiddleware, async (req, res) => {
       if (dc && (!dc.expiresAt || new Date(dc.expiresAt) >= new Date())) {
         if (!dc.usageLimit || dc.usedCount < dc.usageLimit) {
           unitAmount = Math.max(0, unitAmount - (dc.discountAmount * 100));
-          discountApplied = dc.discountAmount;
         }
       }
     }
@@ -153,6 +151,76 @@ checkoutRouter.post("/checkout", authMiddleware, async (req, res) => {
   } catch (error) {
     console.error("Checkout session error:", error.message || error);
     res.status(500).json({ error: "Failed to create checkout session" });
+  }
+});
+
+// ── Native PaymentSheet subscription (Apple Pay / Google Pay / Card) ──
+checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
+  try {
+    const { plan, discountCode } = req.body;
+
+    if (!plan || !PLAN_PRICES[plan]) {
+      res.status(400).json({ error: "Invalid plan. Choose 'monthly' or 'annually'" });
+      return;
+    }
+
+    const user = await User.findById(req.auth.userId);
+    if (!user) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    const selectedPlan = await getPlanConfig(plan);
+
+    let customerId = user.stripeCustomerId;
+    if (!customerId) {
+      const customer = await stripe.customers.create({
+        email: user.email,
+        metadata: { userId: user._id.toString() },
+      });
+      customerId = customer.id;
+      user.stripeCustomerId = customerId;
+      await user.save();
+    }
+
+    let unitAmount = selectedPlan.amount;
+    if (discountCode && plan === "annually") {
+      const dc = await DiscountCode.findOne({
+        code: discountCode.toUpperCase().trim(),
+        active: true,
+      });
+      if (dc && (!dc.expiresAt || new Date(dc.expiresAt) >= new Date())) {
+        if (!dc.usageLimit || dc.usedCount < dc.usageLimit) {
+          unitAmount = Math.max(0, unitAmount - (dc.discountAmount * 100));
+        }
+      }
+    }
+
+    const price = await stripe.prices.create({
+      currency: "usd",
+      unit_amount: unitAmount,
+      recurring: { interval: selectedPlan.interval },
+      product_data: { name: selectedPlan.label },
+    });
+
+    const subscription = await stripe.subscriptions.create({
+      customer: customerId,
+      items: [{ price: price.id }],
+      payment_behavior: "default_incomplete",
+      payment_settings: { save_default_payment_method: "on_subscription" },
+      expand: ["latest_invoice.payment_intent"],
+      metadata: { userId: user._id.toString(), plan, discountCode: discountCode || "" },
+    });
+
+    const paymentIntent = subscription.latest_invoice?.payment_intent;
+
+    res.json({
+      subscriptionId: subscription.id,
+      clientSecret: paymentIntent?.client_secret,
+    });
+  } catch (error) {
+    console.error("Create subscription error:", error.message || error);
+    res.status(500).json({ error: "Failed to create subscription" });
   }
 });
 
@@ -403,6 +471,30 @@ webhookRouter.post(
             ? await User.findOne({ stripeCustomerId: invoice.customer })
             : null;
           const interval = await resolveInvoiceInterval(invoice);
+
+          // Upgrade user to pro on successful payment
+          if (user && invoice.subscription) {
+            // Fetch the subscription to confirm its status
+            try {
+              const sub = await stripe.subscriptions.retrieve(invoice.subscription);
+              if (["active", "trialing"].includes(sub.status) && user.subscriptionTier !== "pro") {
+                user.subscriptionTier = "pro";
+                user.stripeSubscriptionId = sub.id;
+                user.billingInterval = toBillingInterval(interval);
+                if (invoice.amount_paid != null) {
+                  user.subscriptionAmount = invoice.amount_paid / 100;
+                }
+                if (sub.current_period_end) {
+                  user.subscriptionExpiry = new Date(sub.current_period_end * 1000);
+                }
+                await user.save();
+                console.log(`User ${user.email} upgraded to pro via invoice.paid`);
+              }
+            } catch (err) {
+              console.error("Failed to retrieve subscription from invoice.paid:", err.message);
+            }
+          }
+
           await upsertTransaction({
             invoiceId: invoice.id,
             chargeId: invoice.payment_intent || "",
@@ -452,6 +544,11 @@ webhookRouter.post(
           const user = charge.customer
             ? await User.findOne({ stripeCustomerId: charge.customer })
             : null;
+          // Use the latest individual refund amount, not cumulative amount_refunded
+          const latestRefund = charge.refunds?.data?.[0];
+          const refundAmount = latestRefund
+            ? latestRefund.amount / 100
+            : (charge.amount_refunded || 0) / 100;
           await upsertTransaction({
             invoiceId: charge.invoice || "",
             chargeId: charge.id,
@@ -462,7 +559,7 @@ webhookRouter.post(
               ? `${user.firstName || ""} ${user.lastName || ""}`.trim()
               : "",
             plan: "",
-            amount: (charge.amount_refunded || 0) / 100,
+            amount: refundAmount,
             status: "refunded",
             date: new Date((charge.refunded_at || charge.created) * 1000),
           });
@@ -479,12 +576,15 @@ webhookRouter.post(
               if (subscription.current_period_end) {
                 user.subscriptionExpiry = new Date(subscription.current_period_end * 1000);
               }
-            } else {
+            } else if (["canceled", "unpaid", "incomplete_expired"].includes(subscription.status)) {
+              // Only remove pro access on definitive cancellation/failure states.
+              // past_due keeps pro access while Stripe retries payment.
               user.subscriptionTier = "free";
               user.stripeSubscriptionId = undefined;
               user.subscriptionExpiry = undefined;
               user.billingInterval = undefined;
             }
+            // past_due, incomplete — keep current tier, Stripe will retry
             await user.save();
             console.log(`Subscription updated for ${user.email}: ${subscription.status}`);
           }
