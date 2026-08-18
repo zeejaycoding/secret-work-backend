@@ -196,18 +196,20 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
       }
     }
 
-    const price = await stripe.prices.create({
-      currency: "usd",
-      unit_amount: unitAmount,
-      recurring: { interval: selectedPlan.interval },
-      product_data: { name: selectedPlan.label },
-    });
-
     let subscription;
     try {
       subscription = await stripe.subscriptions.create({
         customer: customerId,
-        items: [{ price: price.id }],
+        items: [
+          {
+            price_data: {
+              currency: "usd",
+              unit_amount: unitAmount,
+              recurring: { interval: selectedPlan.interval },
+              product_data: { name: selectedPlan.label },
+            },
+          },
+        ],
         payment_behavior: "default_incomplete",
         payment_settings: { save_default_payment_method: "on_subscription" },
         expand: ["latest_invoice.payment_intent"],
@@ -224,8 +226,42 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
 
     console.log("Subscription created:", subscription.id);
     console.log("latest_invoice:", subscription.latest_invoice?.id);
+    console.log("invoice_status:", subscription.latest_invoice?.status);
     console.log("payment_intent:", paymentIntent?.id);
     console.log("client_secret:", paymentIntent?.client_secret ? "present" : "MISSING");
+
+    // If clientSecret is null, the invoice may have been auto-paid
+    // (e.g., customer has existing payment method from previous subscription)
+    if (!paymentIntent?.client_secret) {
+      const invoiceStatus = subscription.latest_invoice?.status;
+      if (invoiceStatus === "paid") {
+        // Invoice already paid — subscription is active, no payment needed
+        console.log("Invoice already paid — no payment required");
+        return res.json({
+          subscriptionId: subscription.id,
+          clientSecret: null,
+          alreadyPaid: true,
+        });
+      }
+      // Invoice is open/draft but no payment_intent — try to retrieve it
+      if (subscription.latest_invoice?.id) {
+        try {
+          const invoice = await stripe.invoices.retrieve(subscription.latest_invoice.id);
+          if (invoice.payment_intent) {
+            const pi = typeof invoice.payment_intent === "string"
+              ? await stripe.paymentIntents.retrieve(invoice.payment_intent)
+              : invoice.payment_intent;
+            console.log("Retrieved payment_intent from invoice:", pi.id);
+            return res.json({
+              subscriptionId: subscription.id,
+              clientSecret: pi.client_secret,
+            });
+          }
+        } catch (invErr) {
+          console.error("Failed to retrieve invoice payment_intent:", invErr.message);
+        }
+      }
+    }
 
     res.json({
       subscriptionId: subscription.id,
