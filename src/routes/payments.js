@@ -206,7 +206,7 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
               currency: "usd",
               unit_amount: unitAmount,
               recurring: { interval: selectedPlan.interval },
-              product_data: { name: selectedPlan.label },
+              product: selectedPlan.label,
             },
           },
         ],
