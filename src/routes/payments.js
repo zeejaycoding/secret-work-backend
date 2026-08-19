@@ -501,8 +501,17 @@ checkoutRouter.post("/google-pay-intent", authMiddleware, async (req, res) => {
         } catch (e) {
           console.error("Google Pay: failed to retrieve pending sub invoice:", e.message);
         }
+        // PI expired/canceled — cancel the stale sub so we can create a fresh one
+        try {
+          await stripe.subscriptions.cancel(pendingSub.id);
+          console.log("Google Pay: cancelled stale incomplete sub:", pendingSub.id);
+        } catch (e) {
+          console.error("Google Pay: failed to cancel stale sub:", e.message);
+        }
+      } else {
+        // Active/trialing/past_due — already has access or pending payment
+        return res.json({ alreadyPaid: pendingSub.status === "active" || pendingSub.status === "trialing" });
       }
-      return res.json({ alreadyPaid: pendingSub.status === "active" || pendingSub.status === "trialing" });
     }
 
     const selectedPlan = await getPlanConfig(plan);
