@@ -16,8 +16,8 @@ const PLAN_PRICES = {
   annually: { amount: 7900, interval: "year", label: "Annual Pro" },
 };
 
-// Read the current price/interval/label for a checkout plan from the DB,
-// falling back to the static defaults when not configured yet.
+const MINIMUM_CHARGE_CENTS = 50;
+
 async function getPlanConfig(key) {
   const planKey = key === "annually" ? "annual" : "monthly";
   const doc = await Plan.findOne({ key: planKey });
@@ -31,15 +31,12 @@ async function getPlanConfig(key) {
   return PLAN_PRICES[key];
 }
 
-// Map Stripe/plan interval values to our billingInterval field
 function toBillingInterval(value) {
   if (value === "year" || value === "annually") return "annual";
   if (value === "month" || value === "monthly") return "monthly";
   return undefined;
 }
 
-// Stripe stores the recurring interval on subscription items as plan.interval
-// (and price.recurring.interval), not plan.recurring.interval.
 function getInterval(subscription) {
   const item = subscription?.items?.data?.[0];
   return (
@@ -55,8 +52,6 @@ function getInvoiceInterval(invoice) {
   return line?.plan?.interval || line?.price?.recurring?.interval || null;
 }
 
-// Some invoices (e.g. initial checkout invoices in newer Stripe API versions)
-// don't carry the interval on the line item or top-level subscription field.
 async function resolveInvoiceInterval(invoice) {
   const fromLine = getInvoiceInterval(invoice);
   if (fromLine) return fromLine;
@@ -80,8 +75,154 @@ async function resolveInvoiceInterval(invoice) {
   }
 }
 
+// ── Helpers ──
+
+async function getOrCreateCustomer(user) {
+  if (user.stripeCustomerId) return user.stripeCustomerId;
+
+  const customer = await stripe.customers.create({
+    email: user.email,
+    metadata: { userId: user._id.toString() },
+  });
+  user.stripeCustomerId = customer.id;
+  await user.save();
+  return customer.id;
+}
+
+// Reuse Stripe Products/Prices by plan key instead of creating per customer.
+async function getOrCreatePrice(planKey, unitAmount) {
+  const planConfig = await getPlanConfig(planKey);
+  const interval = planConfig.interval;
+  const label = planConfig.label;
+
+  const existing = await stripe.products.search({
+    query: `metadata["planKey"]:"${planKey}"`,
+    limit: 1,
+  });
+
+  let productId;
+  if (existing.data.length > 0) {
+    productId = existing.data[0].id;
+  } else {
+    const product = await stripe.products.create({
+      name: label,
+      metadata: { planKey },
+    });
+    productId = product.id;
+  }
+
+  const prices = await stripe.prices.list({
+    product: productId,
+    recurring: { interval },
+    active: true,
+    limit: 100,
+  });
+  const match = prices.data.find((p) => p.unit_amount === unitAmount);
+  if (match) return match.id;
+
+  const price = await stripe.prices.create({
+    currency: "usd",
+    unit_amount: unitAmount,
+    recurring: { interval },
+    product: productId,
+  });
+  return price.id;
+}
+
+// Validate discount code and compute final amount.
+// Enforces minimum charge so price never drops below MINIMUM_CHARGE_CENTS.
+async function validateAndApplyDiscount(plan, unitAmount, discountCode) {
+  if (!discountCode || plan !== "annually") {
+    return { valid: true, unitAmount, discountAmount: 0, code: null };
+  }
+
+  const dc = await DiscountCode.findOne({
+    code: discountCode.toUpperCase().trim(),
+    active: true,
+  });
+
+  if (!dc) {
+    return { valid: false, unitAmount, discountAmount: 0, code: null, message: "Invalid discount code" };
+  }
+
+  if (dc.expiresAt && new Date(dc.expiresAt) < new Date()) {
+    return { valid: false, unitAmount, discountAmount: 0, code: null, message: "Discount code has expired" };
+  }
+
+  if (dc.usageLimit && dc.usedCount >= dc.usageLimit) {
+    return { valid: false, unitAmount, discountAmount: 0, code: null, message: "Discount code has been fully redeemed" };
+  }
+
+  const discountCents = (dc.discountAmount || 0) * 100;
+  const finalAmount = Math.max(MINIMUM_CHARGE_CENTS, unitAmount - discountCents);
+
+  return {
+    valid: true,
+    unitAmount: finalAmount,
+    discountAmount: dc.discountAmount || 0,
+    code: dc.code,
+  };
+}
+
+// Atomically record discount usage. Uses $expr to compare usedCount < usageLimit
+// within the same query so two concurrent requests can't both succeed past the limit.
+async function recordDiscountUsage(code, userId) {
+  const upperCode = code.toUpperCase().trim();
+
+  const result = await DiscountCode.findOneAndUpdate(
+    {
+      code: upperCode,
+      active: true,
+      usedBy: { $ne: userId },
+      $or: [
+        { usageLimit: null },
+        { $expr: { $lt: ["$usedCount", "$usageLimit"] } },
+      ],
+    },
+    {
+      $inc: { usedCount: 1 },
+      $push: { usedBy: userId },
+    },
+    { new: true }
+  );
+
+  if (!result) {
+    const dc = await DiscountCode.findOne({ code: upperCode });
+    if (dc && dc.usageLimit && dc.usedCount >= dc.usageLimit) {
+      console.warn(`Discount ${upperCode} concurrent redemption blocked — limit reached`);
+    }
+  }
+
+  return result;
+}
+
+// Cancel abandoned incomplete subscriptions created by our app only.
+async function cancelAbandonedSubscriptions(customerId) {
+  try {
+    const incomplete = await stripe.subscriptions.list({
+      customer: customerId,
+      status: "incomplete",
+      limit: 100,
+    });
+
+    for (const sub of incomplete.data) {
+      const age = Date.now() - sub.created * 1000;
+      if (
+        age > 60 * 60 * 1000 &&
+        sub.metadata?.source === "secret_work_app"
+      ) {
+        await stripe.subscriptions.cancel(sub.id);
+        console.log(`Cancelled abandoned subscription ${sub.id} for ${customerId}`);
+      }
+    }
+  } catch (err) {
+    console.error("Error cancelling abandoned subscriptions:", err.message);
+  }
+}
+
 const checkoutRouter = Router();
 
+// ── Checkout (web redirect) ──
 checkoutRouter.post("/checkout", authMiddleware, async (req, res) => {
   try {
     const { plan, discountCode } = req.body;
@@ -97,31 +238,13 @@ checkoutRouter.post("/checkout", authMiddleware, async (req, res) => {
       return;
     }
 
+    const customerId = await getOrCreateCustomer(user);
     const selectedPlan = await getPlanConfig(plan);
 
-    let customerId = user.stripeCustomerId;
-
-    if (!customerId) {
-      const customer = await stripe.customers.create({
-        email: user.email,
-        metadata: { userId: user._id.toString() },
-      });
-      customerId = customer.id;
-      user.stripeCustomerId = customerId;
-      await user.save();
-    }
-
-    let unitAmount = selectedPlan.amount;
-    if (discountCode && plan === "annually") {
-      const dc = await DiscountCode.findOne({
-        code: discountCode.toUpperCase().trim(),
-        active: true,
-      });
-      if (dc && (!dc.expiresAt || new Date(dc.expiresAt) >= new Date())) {
-        if (!dc.usageLimit || dc.usedCount < dc.usageLimit) {
-          unitAmount = Math.max(0, unitAmount - (dc.discountAmount * 100));
-        }
-      }
+    const discount = await validateAndApplyDiscount(plan, selectedPlan.amount, discountCode);
+    if (!discount.valid) {
+      res.status(400).json({ error: discount.message });
+      return;
     }
 
     const session = await stripe.checkout.sessions.create({
@@ -136,7 +259,7 @@ checkoutRouter.post("/checkout", authMiddleware, async (req, res) => {
               name: selectedPlan.label,
               description: "Secret Work Pro Subscription",
             },
-            unit_amount: unitAmount,
+            unit_amount: discount.unitAmount,
             recurring: { interval: selectedPlan.interval },
           },
           quantity: 1,
@@ -144,7 +267,7 @@ checkoutRouter.post("/checkout", authMiddleware, async (req, res) => {
       ],
       success_url: `${env.frontendUrl.split(",").pop()}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${env.frontendUrl.split(",").pop()}/payment-cancel`,
-      metadata: { userId: user._id.toString(), plan, discountCode: discountCode || "" },
+      metadata: { userId: user._id.toString(), plan, discountCode: discount.code || "" },
     });
 
     res.json({ url: session.url, sessionId: session.id });
@@ -154,8 +277,7 @@ checkoutRouter.post("/checkout", authMiddleware, async (req, res) => {
   }
 });
 
-// ── Native PaymentSheet subscription (Apple Pay / Google Pay / Card) ──
-// Step 1: Create a SetupIntent so PaymentSheet can collect the payment method
+// ── SetupIntent (PaymentSheet / Apple Pay) ──
 checkoutRouter.post("/setup-intent", authMiddleware, async (req, res) => {
   try {
     const user = await User.findById(req.auth.userId);
@@ -164,36 +286,39 @@ checkoutRouter.post("/setup-intent", authMiddleware, async (req, res) => {
       return;
     }
 
-    let customerId = user.stripeCustomerId;
-    if (!customerId) {
-      const customer = await stripe.customers.create({
-        email: user.email,
-        metadata: { userId: user._id.toString() },
-      });
-      customerId = customer.id;
-      user.stripeCustomerId = customerId;
-      await user.save();
-    }
+    const customerId = await getOrCreateCustomer(user);
 
     const setupIntent = await stripe.setupIntents.create({
       customer: customerId,
       automatic_payment_methods: { enabled: true },
     });
 
-    res.json({ clientSecret: setupIntent.client_secret, customerId });
+    res.json({
+      clientSecret: setupIntent.client_secret,
+      setupIntentId: setupIntent.id,
+      customerId,
+    });
   } catch (error) {
     console.error("Setup intent error:", error.message || error);
     res.status(500).json({ error: "Failed to create setup intent" });
   }
 });
 
-// Step 2: After PaymentSheet success, create the subscription with the saved payment method
+// ── Create Subscription (after SetupIntent confirmation via PaymentSheet) ──
+// Accepts setupIntentId so we retrieve the exact payment_method instead of guessing.
+// Uses payment_behavior: "default_incomplete" + expanded invoice PI so we can detect
+// and return requires_action to the client when 3DS or other auth is needed.
 checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
   try {
-    const { plan, discountCode } = req.body;
+    const { plan, discountCode, setupIntentId } = req.body;
 
     if (!plan || !PLAN_PRICES[plan]) {
       res.status(400).json({ error: "Invalid plan. Choose 'monthly' or 'annually'" });
+      return;
+    }
+
+    if (!setupIntentId) {
+      res.status(400).json({ error: "setupIntentId is required" });
       return;
     }
 
@@ -208,95 +333,162 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
       return;
     }
 
-    const selectedPlan = await getPlanConfig(plan);
-
-    let unitAmount = selectedPlan.amount;
-    if (discountCode && plan === "annually") {
-      const dc = await DiscountCode.findOne({
-        code: discountCode.toUpperCase().trim(),
-        active: true,
-      });
-      if (dc && (!dc.expiresAt || new Date(dc.expiresAt) >= new Date())) {
-        if (!dc.usageLimit || dc.usedCount < dc.usageLimit) {
-          unitAmount = Math.max(0, unitAmount - (dc.discountAmount * 100));
-        }
-      }
+    let setupIntent;
+    try {
+      setupIntent = await stripe.setupIntents.retrieve(setupIntentId);
+    } catch {
+      res.status(400).json({ error: "Invalid or expired setup intent" });
+      return;
     }
 
-    // Check for existing active subscription
+    if (setupIntent.status !== "succeeded") {
+      res.status(400).json({ error: "Setup intent has not been confirmed" });
+      return;
+    }
+
+    const paymentMethodId = setupIntent.payment_method;
+    if (!paymentMethodId) {
+      res.status(400).json({ error: "No payment method attached to setup intent" });
+      return;
+    }
+
+    const selectedPlan = await getPlanConfig(plan);
+    const discount = await validateAndApplyDiscount(plan, selectedPlan.amount, discountCode);
+    if (!discount.valid) {
+      res.status(400).json({ error: discount.message });
+      return;
+    }
+
+    await cancelAbandonedSubscriptions(user.stripeCustomerId);
+
     const existingSubs = await stripe.subscriptions.list({
       customer: user.stripeCustomerId,
       status: "active",
       limit: 1,
     });
     if (existingSubs.data.length > 0) {
-      const existing = existingSubs.data[0];
-      console.log("User already has active subscription:", existing.id);
-      user.subscriptionTier = "pro";
-      user.stripeSubscriptionId = existing.id;
-      user.billingInterval = toBillingInterval(getInterval(existing));
-      if (existing.current_period_end) {
-        user.subscriptionExpiry = new Date(existing.current_period_end * 1000);
-      }
-      await user.save();
-      return res.json({ subscriptionId: existing.id, alreadyPaid: true });
+      return res.json({ subscriptionId: existingSubs.data[0].id, alreadyPaid: true });
     }
 
-    const product = await stripe.products.create({
-      name: selectedPlan.label,
-      metadata: { userId: user._id.toString(), plan },
-    });
-
-    const price = await stripe.prices.create({
-      currency: "usd",
-      unit_amount: unitAmount,
-      recurring: { interval: selectedPlan.interval },
-      product: product.id,
-    });
+    const priceId = await getOrCreatePrice(plan, discount.unitAmount);
 
     const subscription = await stripe.subscriptions.create({
       customer: user.stripeCustomerId,
-      items: [{ price: price.id }],
-      default_payment_method: await getDefaultPaymentMethod(user.stripeCustomerId),
-      metadata: { userId: user._id.toString(), plan, discountCode: discountCode || "" },
+      items: [{ price: priceId }],
+      default_payment_method: paymentMethodId,
+      payment_behavior: "default_incomplete",
+      expand: ["latest_invoice.payment_intent"],
+      metadata: {
+        userId: user._id.toString(),
+        plan,
+        discountCode: discount.code || "",
+        source: "secret_work_app",
+      },
     });
 
-    console.log("Subscription created:", subscription.id, "status:", subscription.status);
+    const invoice = subscription.latest_invoice;
+    const pi = invoice?.payment_intent;
 
-    // Subscription should be active since we charged the saved payment method
+    // Webhook (invoice.paid) is the only thing that grants Pro access.
+    // Here we just report the subscription/PI state so the client knows
+    // whether it needs to confirm additional authentication.
     if (subscription.status === "active") {
-      user.subscriptionTier = "pro";
-      user.stripeSubscriptionId = subscription.id;
-      user.billingInterval = toBillingInterval(getInterval(subscription));
-      if (subscription.current_period_end) {
-        user.subscriptionExpiry = new Date(subscription.current_period_end * 1000);
-      }
-      const item = subscription.items?.data?.[0];
-      const priceAmount = item?.price?.unit_amount || item?.plan?.amount;
-      if (priceAmount != null) user.subscriptionAmount = priceAmount / 100;
-      await user.save();
+      res.json({ subscriptionId: subscription.id, alreadyPaid: true });
+    } else if (pi?.status === "requires_action" && pi?.client_secret) {
+      res.json({
+        subscriptionId: subscription.id,
+        requiresAction: true,
+        clientSecret: pi.client_secret,
+      });
+    } else if (pi?.status === "requires_payment_method") {
+      res.status(402).json({ error: "Payment method was declined. Please try a different card." });
+    } else {
+      // Incomplete but not actionable — webhook will handle eventual state
+      res.json({ subscriptionId: subscription.id, alreadyPaid: false });
     }
-
-    res.json({ subscriptionId: subscription.id, alreadyPaid: subscription.status === "active" });
   } catch (error) {
     console.error("Create subscription error:", error.message || error);
     res.status(500).json({ error: error.message || "Failed to create subscription" });
   }
 });
 
-async function getDefaultPaymentMethod(customerId) {
+// ── Google Pay (PlatformPayButton) flow ──
+checkoutRouter.post("/google-pay-intent", authMiddleware, async (req, res) => {
   try {
-    const paymentMethods = await stripe.paymentMethods.list({
+    const { plan, discountCode } = req.body;
+
+    if (!plan || !PLAN_PRICES[plan]) {
+      res.status(400).json({ error: "Invalid plan. Choose 'monthly' or 'annually'" });
+      return;
+    }
+
+    const user = await User.findById(req.auth.userId);
+    if (!user) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    const customerId = await getOrCreateCustomer(user);
+
+    await cancelAbandonedSubscriptions(customerId);
+
+    const existingSubs = await stripe.subscriptions.list({
       customer: customerId,
-      type: "card",
+      status: "active",
       limit: 1,
     });
-    return paymentMethods.data[0]?.id || null;
-  } catch {
-    return null;
-  }
-}
+    if (existingSubs.data.length > 0) {
+      return res.json({ alreadyPaid: true });
+    }
 
+    const selectedPlan = await getPlanConfig(plan);
+    const discount = await validateAndApplyDiscount(plan, selectedPlan.amount, discountCode);
+    if (!discount.valid) {
+      res.status(400).json({ error: discount.message });
+      return;
+    }
+
+    const priceId = await getOrCreatePrice(plan, discount.unitAmount);
+
+    const subscription = await stripe.subscriptions.create({
+      customer: customerId,
+      items: [{ price: priceId }],
+      payment_behavior: "default_incomplete",
+      payment_settings: { save_default_payment_method: "on_subscription" },
+      expand: ["latest_invoice.payment_intent"],
+      metadata: {
+        userId: user._id.toString(),
+        plan,
+        discountCode: discount.code || "",
+        source: "secret_work_app",
+      },
+    });
+
+    const invoice = subscription.latest_invoice;
+    const paymentIntent = invoice?.payment_intent;
+
+    if (!paymentIntent?.client_secret) {
+      console.error("Google Pay: missing PaymentIntent client_secret", subscription.id);
+      res.status(500).json({ error: "Failed to create payment intent" });
+      return;
+    }
+
+    console.log("Google Pay intent created:", subscription.id, "amount:", discount.unitAmount);
+
+    res.json({
+      clientSecret: paymentIntent.client_secret,
+      subscriptionId: subscription.id,
+      amount: discount.unitAmount,
+    });
+  } catch (error) {
+    console.error("Google Pay intent error:", error.message || error);
+    res.status(500).json({ error: error.message || "Failed to create Google Pay intent" });
+  }
+});
+
+// ── Subscription status (read-only) ──
+// Returns the current state from the database.  Does NOT mutate any user
+// fields — the webhook is the sole source of truth for access/subscription state.
 checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
   try {
     const user = await User.findById(req.auth.userId);
@@ -307,7 +499,6 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
 
     let subscription = null;
 
-    // If we already have a subscription ID, fetch it directly
     if (user.stripeSubscriptionId) {
       try {
         subscription = await stripe.subscriptions.retrieve(user.stripeSubscriptionId);
@@ -327,8 +518,6 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
         });
         if (subs.data.length > 0) {
           subscription = subs.data[0];
-          // Sync to DB so we don't have to search next time
-          user.stripeSubscriptionId = subscription.id;
         }
       } catch {
         // ignore
@@ -346,71 +535,6 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
         : subscription?.items?.data?.[0]?.price?.unit_amount != null
           ? subscription.items.data[0].price.unit_amount / 100
           : null;
-
-    // Upgrade user if Stripe shows an active subscription
-    if (isActive && user.subscriptionTier !== "pro") {
-      user.subscriptionTier = "pro";
-      user.stripeSubscriptionId = subscription.id;
-      user.billingInterval = toBillingInterval(interval);
-      if (subscriptionAmount != null) user.subscriptionAmount = subscriptionAmount;
-      if (subscription.current_period_end) {
-        user.subscriptionExpiry = new Date(subscription.current_period_end * 1000);
-      }
-      await user.save();
-      console.log(`User ${user.email} upgraded to pro via subscription check`);
-    } else if (isActive && user.subscriptionAmount == null && subscriptionAmount != null) {
-      user.subscriptionAmount = subscriptionAmount;
-      await user.save();
-    }
-
-    // Downgrade if subscription expired
-    if (user.subscriptionTier === "pro" && !isActive) {
-      user.subscriptionTier = "free";
-      user.stripeSubscriptionId = undefined;
-      user.subscriptionExpiry = undefined;
-      user.billingInterval = undefined;
-      await user.save();
-    }
-
-    // Fallback: record a transaction for an active subscription even if the
-    // Stripe webhook never fired. The app polls this endpoint after checkout,
-    // so this guarantees admin subscription history + revenue chart update.
-    if (isActive && subscription) {
-      try {
-        const item = subscription?.items?.data?.[0];
-        const priceAmount = item?.price?.unit_amount || item?.plan?.amount;
-        const txAmount = priceAmount != null ? priceAmount / 100 : null;
-        const invoiceId = subscription.latest_invoice || "";
-        const txPlan = toBillingInterval(interval) || "";
-
-        const existing = invoiceId
-          ? await Transaction.findOne({ stripeInvoiceId: invoiceId })
-          : await Transaction.findOne({
-              stripeSubscriptionId: subscription.id || "",
-              plan: txPlan,
-              status: "success",
-            });
-
-        if (!existing) {
-          await upsertTransaction({
-            invoiceId: invoiceId || "",
-            chargeId: "",
-            subscriptionId: subscription.id || "",
-            userId: user._id,
-            userEmail: user.email,
-            userName: `${user.firstName || ""} ${user.lastName || ""}`.trim(),
-            plan: txPlan,
-            amount: txAmount,
-            status: "success",
-            date: subscription.current_period_start
-              ? new Date(subscription.current_period_start * 1000)
-              : new Date(),
-          });
-        }
-      } catch (txErr) {
-        console.error("Fallback transaction record error:", txErr.message || txErr);
-      }
-    }
 
     res.json({
       tier: user.subscriptionTier,
@@ -431,6 +555,7 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
   }
 });
 
+// ── Portal ──
 checkoutRouter.post("/portal", authMiddleware, async (req, res) => {
   try {
     const user = await User.findById(req.auth.userId);
@@ -451,6 +576,13 @@ checkoutRouter.post("/portal", authMiddleware, async (req, res) => {
   }
 });
 
+// ══════════════════════════════════════════════════════════════════════
+//  WEBHOOK — Sole authoritative source for payment & access state.
+//
+//  Mounted in index.js BEFORE express.json(), so req.body is the raw
+//  Buffer required for Stripe signature verification.
+// ══════════════════════════════════════════════════════════════════════
+
 const webhookRouter = Router();
 
 webhookRouter.post(
@@ -460,7 +592,7 @@ webhookRouter.post(
     const sig = req.headers["stripe-signature"];
 
     if (!env.stripeWebhookSecret) {
-      console.warn("STRIPE_WEBHOOK_SECRET not set — skipping webhook verification");
+      console.warn("STRIPE_WEBHOOK_SECRET not set — refusing webhook");
       res.status(503).json({ error: "Webhook not configured" });
       return;
     }
@@ -473,6 +605,8 @@ webhookRouter.post(
       res.status(400).json({ error: "Invalid signature" });
       return;
     }
+
+    let processingError = null;
 
     try {
       switch (event.type) {
@@ -522,13 +656,7 @@ webhookRouter.post(
                 });
 
                 if (session.metadata?.discountCode) {
-                  const dc = await DiscountCode.findOne({ code: session.metadata.discountCode.toUpperCase() });
-                  if (dc && !dc.usedBy.includes(user._id)) {
-                    dc.usedCount += 1;
-                    dc.usedBy.push(user._id);
-                    await dc.save();
-                    console.log(`Discount code ${dc.code} used by ${user.email} (count: ${dc.usedCount})`);
-                  }
+                  await recordDiscountUsage(session.metadata.discountCode, user._id);
                 }
               } catch (txErr) {
                 console.error("Record checkout transaction error:", txErr.message || txErr);
@@ -545,9 +673,9 @@ webhookRouter.post(
             : null;
           const interval = await resolveInvoiceInterval(invoice);
 
-          // Upgrade user to pro on successful payment
+          // Grant Pro access on successful payment — this is the single
+          // authoritative point for access grants after initial checkout.
           if (user && invoice.subscription) {
-            // Fetch the subscription to confirm its status
             try {
               const sub = await stripe.subscriptions.retrieve(invoice.subscription);
               if (["active", "trialing"].includes(sub.status) && user.subscriptionTier !== "pro") {
@@ -562,6 +690,22 @@ webhookRouter.post(
                 }
                 await user.save();
                 console.log(`User ${user.email} upgraded to pro via invoice.paid`);
+              } else if (["active", "trialing"].includes(sub.status)) {
+                // Already pro — just sync subscription metadata
+                if (sub.current_period_end) {
+                  user.subscriptionExpiry = new Date(sub.current_period_end * 1000);
+                }
+                if (invoice.amount_paid != null) {
+                  user.subscriptionAmount = invoice.amount_paid / 100;
+                }
+                user.billingInterval = toBillingInterval(interval);
+                await user.save();
+              }
+
+              // Record discount usage from subscription metadata for ALL flows
+              // (checkout, Google Pay, PaymentSheet) — idempotent via upsertTransaction.
+              if (sub.metadata?.discountCode) {
+                await recordDiscountUsage(sub.metadata.discountCode, user._id);
               }
             } catch (err) {
               console.error("Failed to retrieve subscription from invoice.paid:", err.message);
@@ -617,7 +761,6 @@ webhookRouter.post(
           const user = charge.customer
             ? await User.findOne({ stripeCustomerId: charge.customer })
             : null;
-          // Use the latest individual refund amount, not cumulative amount_refunded
           const latestRefund = charge.refunds?.data?.[0];
           const refundAmount = latestRefund
             ? latestRefund.amount / 100
@@ -643,22 +786,26 @@ webhookRouter.post(
           const subscription = event.data.object;
           const user = await User.findOne({ stripeSubscriptionId: subscription.id });
           if (user) {
-            if (["active", "trialing"].includes(subscription.status)) {
-              user.subscriptionTier = "pro";
-              user.billingInterval = toBillingInterval(getInterval(subscription));
-              if (subscription.current_period_end) {
-                user.subscriptionExpiry = new Date(subscription.current_period_end * 1000);
-              }
-            } else if (["canceled", "unpaid", "incomplete_expired"].includes(subscription.status)) {
-              // Only remove pro access on definitive cancellation/failure states.
-              // past_due keeps pro access while Stripe retries payment.
+            if (["canceled", "unpaid", "incomplete_expired"].includes(subscription.status)) {
+              // Definitive cancellation — downgrade
               user.subscriptionTier = "free";
               user.stripeSubscriptionId = undefined;
               user.subscriptionExpiry = undefined;
               user.billingInterval = undefined;
+              await user.save();
+              console.log(`User ${user.email} downgraded to free via subscription.updated`);
+            } else {
+              // Sync metadata only — do NOT independently grant Pro.
+              // Access is granted by invoice.paid.
+              user.billingInterval = toBillingInterval(getInterval(subscription));
+              if (subscription.current_period_end) {
+                user.subscriptionExpiry = new Date(subscription.current_period_end * 1000);
+              }
+              const item = subscription.items?.data?.[0];
+              const priceAmount = item?.price?.unit_amount || item?.plan?.amount;
+              if (priceAmount != null) user.subscriptionAmount = priceAmount / 100;
+              await user.save();
             }
-            // past_due, incomplete — keep current tier, Stripe will retry
-            await user.save();
             console.log(`Subscription updated for ${user.email}: ${subscription.status}`);
           }
           break;
@@ -697,12 +844,18 @@ webhookRouter.post(
       }
     } catch (err) {
       console.error(`Error handling webhook event ${event.type}:`, err.message || err);
+      processingError = err;
     }
 
-    res.json({ received: true });
+    if (processingError) {
+      res.status(500).json({ error: "Webhook processing failed" });
+    } else {
+      res.json({ received: true });
+    }
   }
 );
 
+// ── Discount code validation ──
 const validateDiscountCodeRouter = Router();
 
 validateDiscountCodeRouter.post("/validate", authMiddleware, async (req, res) => {
@@ -742,7 +895,7 @@ validateDiscountCodeRouter.post("/validate", authMiddleware, async (req, res) =>
       valid: true,
       code: dc.code,
       discountAmount: dc.discountAmount,
-      message: `Discount ${dc.discountAmount} off applied to annual plan`,
+      message: `Discount $${dc.discountAmount} off applied to annual plan`,
     });
   } catch (error) {
     console.error("Discount code validation error:", error.message);
