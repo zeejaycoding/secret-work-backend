@@ -687,6 +687,10 @@ checkoutRouter.post("/google-pay-intent", authMiddleware, async (req, res) => {
 
     console.log("Google Pay intent ready:", subscription.id, "amount:", discount.unitAmount);
 
+    // Save subscription ID so getSubscriptionStatus can find it during polling.
+    user.stripeSubscriptionId = subscription.id;
+    await user.save();
+
     res.json({
       clientSecret: paymentIntent.client_secret,
       subscriptionId: subscription.id,
@@ -695,6 +699,115 @@ checkoutRouter.post("/google-pay-intent", authMiddleware, async (req, res) => {
   } catch (error) {
     console.error("Google Pay intent error:", error.message || error);
     res.status(500).json({ error: error.message || "Failed to create Google Pay intent" });
+  }
+});
+
+// ── Confirm Google Pay payment (called by frontend after PI confirmation) ──
+// Forces the invoice to be paid and activates the subscription.
+checkoutRouter.post("/confirm-google-pay", authMiddleware, async (req, res) => {
+  try {
+    const { subscriptionId } = req.body;
+    const user = await User.findById(req.auth.userId);
+    if (!user) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    const subId = subscriptionId || user.stripeSubscriptionId;
+    if (!subId) {
+      return res.json({ activated: false });
+    }
+
+    let sub;
+    try {
+      sub = await stripe.subscriptions.retrieve(subId, {
+        expand: ["latest_invoice.payment_intent", "latest_invoice.payments.payment_intent"],
+      });
+    } catch {
+      return res.json({ activated: false });
+    }
+
+    // Already active — just sync DB
+    if (["active", "trialing"].includes(sub.status)) {
+      if (user.subscriptionTier !== "pro") {
+        user.subscriptionTier = "pro";
+        user.stripeSubscriptionId = sub.id;
+        if (sub.current_period_end) {
+          user.subscriptionExpiry = new Date(sub.current_period_end * 1000);
+        }
+        const item = sub.items?.data?.[0]?.price?.unit_amount;
+        if (item != null) user.subscriptionAmount = item / 100;
+        await user.save();
+        console.log(`Confirm GP: self-healed ${user.email} to pro (already active)`);
+      }
+      return res.json({ activated: true });
+    }
+
+    // Still incomplete — try to rescue by finding and paying the invoice
+    if (sub.status === "incomplete") {
+      const invId =
+        typeof sub.latest_invoice === "string"
+          ? sub.latest_invoice
+          : sub.latest_invoice?.id;
+      if (!invId) return res.json({ activated: false });
+
+      try {
+        const inv = await stripe.invoices.retrieve(invId, {
+          expand: ["payments.payment_intent"],
+        });
+
+        // Find succeeded PI (basil or legacy)
+        let succeededPiId = null;
+        if (inv.payments?.data?.length) {
+          for (const p of inv.payments.data) {
+            if (p.payment?.type === "payment_intent" && p.payment?.payment_intent) {
+              const piId =
+                typeof p.payment.payment_intent === "string"
+                  ? p.payment.payment_intent
+                  : p.payment.payment_intent?.id;
+              if (piId) {
+                const pi = await stripe.paymentIntents.retrieve(piId);
+                if (pi.status === "succeeded") {
+                  succeededPiId = piId;
+                  break;
+                }
+              }
+            }
+          }
+        }
+        // Legacy fallback
+        if (!succeededPiId && inv.payment_intent?.status === "succeeded") {
+          succeededPiId = inv.payment_intent.id;
+        }
+
+        if (succeededPiId) {
+          // Manually pay the invoice with the succeeded PI
+          await stripe.invoices.pay(invId, { payment_intent: succeededPiId });
+          console.log(`Confirm GP: paid invoice ${invId} with PI ${succeededPiId}`);
+          sub = await stripe.subscriptions.retrieve(sub.id);
+        }
+      } catch (e) {
+        console.error("Confirm GP: invoice rescue failed:", e.message);
+      }
+    }
+
+    const isNowActive = ["active", "trialing"].includes(sub.status);
+    if (isNowActive && user.subscriptionTier !== "pro") {
+      user.subscriptionTier = "pro";
+      user.stripeSubscriptionId = sub.id;
+      if (sub.current_period_end) {
+        user.subscriptionExpiry = new Date(sub.current_period_end * 1000);
+      }
+      const item = sub.items?.data?.[0]?.price?.unit_amount;
+      if (item != null) user.subscriptionAmount = item / 100;
+      await user.save();
+      console.log(`Confirm GP: ${user.email} activated to pro`);
+    }
+
+    res.json({ activated: isNowActive });
+  } catch (error) {
+    console.error("Confirm GP error:", error.message || error);
+    res.json({ activated: false });
   }
 });
 
@@ -720,16 +833,87 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
     }
 
     // If no subscription found yet, search by customer (handles race condition
-    // where webhook hasn't fired after checkout)
+    // where webhook hasn't fired after checkout).  Also look for incomplete subs
+    // whose PI may have succeeded client-side (Google Pay flow).
     if (!subscription && user.stripeCustomerId) {
       try {
         const subs = await stripe.subscriptions.list({
           customer: user.stripeCustomerId,
-          status: "active",
-          limit: 1,
+          status: "all",
+          limit: 10,
         });
-        if (subs.data.length > 0) {
-          subscription = subs.data[0];
+        // Prefer active/trialing, fall back to incomplete that we can rescue
+        const active = subs.data.find(
+          (s) => ["active", "trialing"].includes(s.status)
+        );
+        if (active) {
+          subscription = active;
+        } else {
+          // Look for incomplete subs whose invoice PI may have already succeeded
+          const incomplete = subs.data.find((s) => s.status === "incomplete");
+          if (incomplete) {
+            subscription = incomplete;
+            // Try to rescue: check if the PI was already paid
+            try {
+              const invId =
+                typeof incomplete.latest_invoice === "string"
+                  ? incomplete.latest_invoice
+                  : incomplete.latest_invoice?.id;
+              if (invId) {
+                const inv = await stripe.invoices.retrieve(invId, {
+                  expand: ["payments.payment_intent"],
+                });
+                // Basil API: check payments array
+                if (inv.payments?.data?.length) {
+                  const paidPI = inv.payments.data.find(
+                    (p) =>
+                      p.payment?.type === "payment_intent" &&
+                      p.payment?.payment_intent
+                  );
+                  const piId = paidPI
+                    ? typeof paidPI.payment.payment_intent === "string"
+                      ? paidPI.payment.payment_intent
+                      : paidPI.payment.payment_intent?.id
+                    : null;
+                  if (piId) {
+                    const pi = await stripe.paymentIntents.retrieve(piId);
+                    if (pi.status === "succeeded") {
+                      // PI succeeded but subscription still incomplete —
+                      // manually pay the invoice to activate it.
+                      await stripe.invoices.pay(invId, {
+                        payment_intent: piId,
+                      });
+                      console.log(
+                        `Self-heal: manually paid invoice ${invId} with PI ${piId}`
+                      );
+                      // Re-retrieve subscription after paying
+                      subscription = await stripe.subscriptions.retrieve(
+                        incomplete.id
+                      );
+                    }
+                  }
+                }
+                // Legacy fallback
+                if (
+                  inv.payment_intent &&
+                  typeof inv.payment_intent === "object" &&
+                  inv.payment_intent.status === "succeeded"
+                ) {
+                  await stripe.invoices.pay(invId, {
+                    payment_intent: inv.payment_intent.id,
+                  });
+                  subscription = await stripe.subscriptions.retrieve(
+                    incomplete.id
+                  );
+                }
+              }
+            } catch (e) {
+              console.error(
+                "Self-heal: failed to rescue incomplete sub:",
+                e.message
+              );
+            }
+          }
         }
       } catch {
         // ignore
