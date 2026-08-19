@@ -404,16 +404,39 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
     let invoice = subscription.latest_invoice;
     let pi = invoice?.payment_intent;
 
+    // Basil API: check invoice.payments for the PI
+    if (!pi?.client_secret && invoice?.payments?.data?.length) {
+      const ip = invoice.payments.data.find(
+        (p) => p.payment?.type === "payment_intent" && p.payment?.payment_intent
+      );
+      if (ip) {
+        const piId = typeof ip.payment.payment_intent === "string"
+          ? ip.payment.payment_intent
+          : ip.payment.payment_intent?.id;
+        if (piId) {
+          try { pi = await stripe.paymentIntents.retrieve(piId); } catch {}
+        }
+      }
+    }
+
     // If expansion didn't work, manually retrieve the invoice
-    if (!pi && invoice) {
+    if (!pi?.client_secret && invoice) {
       const invoiceId = typeof invoice === "string" ? invoice : invoice.id;
-      console.warn("Subscription: latest_invoice not expanded, retrieving manually:", invoiceId);
+      console.warn("Subscription: invoice missing PI, retrieving manually:", invoiceId);
       try {
         const retrievedInvoice = await stripe.invoices.retrieve(invoiceId, {
-          expand: ["payment_intent"],
+          expand: ["payments.payment_intent"],
         });
-        pi = retrievedInvoice.payment_intent;
         invoice = retrievedInvoice;
+        const ip = retrievedInvoice.payments?.data?.find(
+          (p) => p.payment?.type === "payment_intent" && p.payment?.payment_intent
+        );
+        if (ip) {
+          const piId = typeof ip.payment.payment_intent === "string"
+            ? ip.payment.payment_intent
+            : ip.payment.payment_intent?.id;
+          if (piId) pi = await stripe.paymentIntents.retrieve(piId);
+        }
       } catch (e) {
         console.error("Subscription: failed to retrieve invoice manually:", e.message);
       }
@@ -483,9 +506,21 @@ checkoutRouter.post("/google-pay-intent", authMiddleware, async (req, res) => {
               ? pendingSub.latest_invoice
               : pendingSub.latest_invoice.id;
           const invoice = await stripe.invoices.retrieve(invoiceId, {
-            expand: ["payment_intent"],
+            expand: ["payments.payment_intent"],
           });
-          const pi = invoice.payment_intent;
+          // Check both legacy and basil API for the PI
+          let pi = invoice.payment_intent;
+          if (!pi?.client_secret && invoice.payments?.data?.length) {
+            const ip = invoice.payments.data.find(
+              (p) => p.payment?.type === "payment_intent" && p.payment?.payment_intent
+            );
+            if (ip) {
+              const piId = typeof ip.payment.payment_intent === "string"
+                ? ip.payment.payment_intent
+                : ip.payment.payment_intent?.id;
+              if (piId) pi = await stripe.paymentIntents.retrieve(piId);
+            }
+          }
           if (pi?.client_secret) {
             return res.json({
               clientSecret: pi.client_secret,
@@ -535,41 +570,79 @@ checkoutRouter.post("/google-pay-intent", authMiddleware, async (req, res) => {
       },
     });
 
-    // Robustly extract the PaymentIntent client_secret.
-    // latest_invoice may be a string ID if expansion failed.
+    // Extract the PaymentIntent from the expanded invoice.
+    // Stripe basil API (v2025-03-31+) removed payment_intent from Invoice.
+    // We check both the legacy field and the new payments array.
     let invoice = subscription.latest_invoice;
     let paymentIntent = invoice?.payment_intent;
 
-    // Log what Stripe actually returned for debugging
-    console.log("Google Pay subscription created:", {
-      subId: subscription.id,
-      subStatus: subscription.status,
-      invoiceType: typeof invoice,
-      invoiceId: invoice ? (typeof invoice === "string" ? invoice : invoice.id) : null,
-      invoiceStatus: invoice?.status,
-      piType: typeof paymentIntent,
-      piStatus: paymentIntent?.status,
-      hasClientSecret: !!paymentIntent?.client_secret,
-    });
+    // Basil API: check invoice.payments for the PI
+    if (!paymentIntent?.client_secret && invoice?.payments?.data?.length) {
+      const invoicePayment = invoice.payments.data.find(
+        (p) => p.payment?.type === "payment_intent" && p.payment?.payment_intent
+      );
+      if (invoicePayment) {
+        const piId = typeof invoicePayment.payment.payment_intent === "string"
+          ? invoicePayment.payment.payment_intent
+          : invoicePayment.payment.payment_intent?.id;
+        if (piId) {
+          try {
+            paymentIntent = await stripe.paymentIntents.retrieve(piId);
+          } catch (e) {
+            console.error("Google Pay: failed to retrieve PI from payments:", e.message);
+          }
+        }
+      }
+    }
 
     // If expansion didn't work, manually retrieve the invoice
     if (!paymentIntent?.client_secret && invoice) {
       const invoiceId = typeof invoice === "string" ? invoice : invoice.id;
-      console.warn("Google Pay: latest_invoice not expanded, retrieving manually:", invoiceId);
+      console.warn("Google Pay: invoice missing PI, retrieving manually:", invoiceId);
       try {
         const retrievedInvoice = await stripe.invoices.retrieve(invoiceId, {
-          expand: ["payment_intent"],
+          expand: ["payments.payment_intent"],
         });
-        paymentIntent = retrievedInvoice.payment_intent;
         invoice = retrievedInvoice;
-        console.log("Google Pay: manual invoice retrieval succeeded:", {
-          invoiceId: retrievedInvoice.id,
-          invoiceStatus: retrievedInvoice.status,
-          piStatus: paymentIntent?.status,
-          hasClientSecret: !!paymentIntent?.client_secret,
-        });
+        const invoicePayment = retrievedInvoice.payments?.data?.find(
+          (p) => p.payment?.type === "payment_intent" && p.payment?.payment_intent
+        );
+        if (invoicePayment) {
+          const piId = typeof invoicePayment.payment.payment_intent === "string"
+            ? invoicePayment.payment.payment_intent
+            : invoicePayment.payment.payment_intent?.id;
+          if (piId) {
+            paymentIntent = await stripe.paymentIntents.retrieve(piId);
+          }
+        }
       } catch (e) {
         console.error("Google Pay: failed to retrieve invoice manually:", e.message);
+      }
+    }
+
+    // No PaymentIntent on the invoice — create one and attach it.
+    if (!paymentIntent?.client_secret && invoice) {
+      const invoiceId = typeof invoice === "string" ? invoice : invoice.id;
+      console.warn("Google Pay: no PI on invoice", invoiceId, "— creating one");
+      try {
+        paymentIntent = await stripe.paymentIntents.create({
+          amount: invoice.amount_due,
+          currency: invoice.currency,
+          customer: customerId,
+          automatic_payment_methods: { enabled: true },
+          metadata: {
+            subscriptionId: subscription.id,
+            invoiceId,
+            userId: user._id.toString(),
+          },
+        });
+        // Attach PI to invoice so payment credits the invoice
+        await stripe.invoices.attachPayment(invoiceId, {
+          payment_intent: paymentIntent.id,
+        });
+        console.log("Google Pay: created and attached PI:", paymentIntent.id, "amount:", invoice.amount_due);
+      } catch (e) {
+        console.error("Google Pay: failed to create/attach PI:", e.message);
       }
     }
 
@@ -579,13 +652,12 @@ checkoutRouter.post("/google-pay-intent", authMiddleware, async (req, res) => {
         subscriptionStatus: subscription.status,
         invoiceId: invoice ? (typeof invoice === "string" ? invoice : invoice.id) : null,
         invoiceStatus: invoice?.status,
-        piStatus: paymentIntent?.status,
       });
       res.status(500).json({ error: "Failed to create payment intent" });
       return;
     }
 
-    console.log("Google Pay intent created:", subscription.id, "amount:", discount.unitAmount);
+    console.log("Google Pay intent ready:", subscription.id, "amount:", discount.unitAmount);
 
     res.json({
       clientSecret: paymentIntent.client_secret,
