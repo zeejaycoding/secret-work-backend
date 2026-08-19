@@ -814,6 +814,7 @@ checkoutRouter.post("/confirm-google-pay", authMiddleware, async (req, res) => {
 // fields — the webhook is the sole source of truth for access/subscription state.
 checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
   try {
+    console.log("GET /subscription hit, userId:", req.auth?.userId);
     const user = await User.findById(req.auth.userId);
     if (!user) {
       res.status(404).json({ error: "User not found" });
@@ -825,8 +826,8 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
     if (user.stripeSubscriptionId) {
       try {
         subscription = await stripe.subscriptions.retrieve(user.stripeSubscriptionId);
-      } catch {
-        // subscription may have been deleted in Stripe
+      } catch (e) {
+        console.error("Sub status: failed to retrieve sub:", user.stripeSubscriptionId, e.message);
       }
     }
 
@@ -838,12 +839,11 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
           customer: user.stripeCustomerId,
           limit: 10,
         });
-        // Prefer active/trialing
         subscription = subs.data.find(
           (s) => ["active", "trialing"].includes(s.status)
         ) || subs.data[0] || null;
-      } catch {
-        // ignore
+      } catch (e) {
+        console.error("Sub status: failed to list subs:", e.message);
       }
     }
 
@@ -851,7 +851,6 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
       subscription && ["active", "trialing"].includes(subscription.status);
 
     // Self-heal: if Stripe says active but DB says free, sync the DB.
-    // This covers the gap between payment confirmation and webhook delivery.
     if (isActive && user.subscriptionTier !== "pro") {
       user.subscriptionTier = "pro";
       user.stripeSubscriptionId = subscription.id;
@@ -890,7 +889,7 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
             : "Pro",
     });
   } catch (error) {
-    console.error("Subscription status error:", error.message || error, error.stack);
+    console.error("SUBSCRIPTION STATUS ERROR:", error);
     res.status(500).json({ error: "Failed to get subscription status" });
   }
 });
