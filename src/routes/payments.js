@@ -379,6 +379,15 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
     );
     if (pendingSub) {
       if (pendingSub.status === "active" || pendingSub.status === "trialing") {
+        if (user.subscriptionTier !== "pro") {
+          user.subscriptionTier = "pro";
+          user.stripeSubscriptionId = pendingSub.id;
+          if (pendingSub.current_period_end) {
+            user.subscriptionExpiry = new Date(pendingSub.current_period_end * 1000);
+          }
+          await user.save();
+          console.log(`Subscription: self-healed ${user.email} to pro`);
+        }
         return res.json({ subscriptionId: pendingSub.id, alreadyPaid: true });
       }
       // Incomplete sub exists — don't create another
@@ -442,10 +451,19 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
       }
     }
 
-    // Webhook (invoice.paid) is the only thing that grants Pro access.
+    // Webhook (invoice.paid) is the single authoritative access grant.
     // Here we just report the subscription/PI state so the client knows
     // whether it needs to confirm additional authentication.
     if (subscription.status === "active") {
+      if (user.subscriptionTier !== "pro") {
+        user.subscriptionTier = "pro";
+        user.stripeSubscriptionId = subscription.id;
+        if (subscription.current_period_end) {
+          user.subscriptionExpiry = new Date(subscription.current_period_end * 1000);
+        }
+        await user.save();
+        console.log(`Subscription: self-healed ${user.email} to pro (created active)`);
+      }
       res.json({ subscriptionId: subscription.id, alreadyPaid: true });
     } else if (pi?.status === "requires_action" && pi?.client_secret) {
       res.json({
@@ -540,7 +558,17 @@ checkoutRouter.post("/google-pay-intent", authMiddleware, async (req, res) => {
         }
       } else {
         // Active/trialing/past_due — already has access or pending payment
-        return res.json({ alreadyPaid: pendingSub.status === "active" || pendingSub.status === "trialing" });
+        const isPaid = pendingSub.status === "active" || pendingSub.status === "trialing";
+        if (isPaid && user.subscriptionTier !== "pro") {
+          user.subscriptionTier = "pro";
+          user.stripeSubscriptionId = pendingSub.id;
+          if (pendingSub.current_period_end) {
+            user.subscriptionExpiry = new Date(pendingSub.current_period_end * 1000);
+          }
+          await user.save();
+          console.log(`Google Pay: self-healed ${user.email} to pro (active sub found)`);
+        }
+        return res.json({ alreadyPaid: isPaid });
       }
     }
 
