@@ -387,24 +387,19 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
 
     const priceId = await getOrCreatePrice(plan, discount.unitAmount);
 
-    const idempotencyKey = `setup-sub:${user._id.toString()}:${plan}:${discount.code || "none"}`;
-
-    const subscription = await stripe.subscriptions.create(
-      {
-        customer: user.stripeCustomerId,
-        items: [{ price: priceId }],
-        default_payment_method: paymentMethodId,
-        payment_behavior: "default_incomplete",
-        expand: ["latest_invoice.payment_intent"],
-        metadata: {
-          userId: user._id.toString(),
-          plan,
-          discountCode: discount.code || "",
-          source: "secret_work_app",
-        },
+    const subscription = await stripe.subscriptions.create({
+      customer: user.stripeCustomerId,
+      items: [{ price: priceId }],
+      default_payment_method: paymentMethodId,
+      payment_behavior: "default_incomplete",
+      expand: ["latest_invoice.payment_intent"],
+      metadata: {
+        userId: user._id.toString(),
+        plan,
+        discountCode: discount.code || "",
+        source: "secret_work_app",
       },
-      { idempotencyKey }
-    );
+    });
 
     let invoice = subscription.latest_invoice;
     let pi = invoice?.payment_intent;
@@ -523,30 +518,39 @@ checkoutRouter.post("/google-pay-intent", authMiddleware, async (req, res) => {
 
     const priceId = await getOrCreatePrice(plan, discount.unitAmount);
 
-    // Use idempotency key to prevent duplicate subscriptions on retry
-    const idempotencyKey = `google-pay-sub:${user._id.toString()}:${plan}:${discount.code || "none"}`;
-
-    const subscription = await stripe.subscriptions.create(
-      {
-        customer: customerId,
-        items: [{ price: priceId }],
-        payment_behavior: "default_incomplete",
-        payment_settings: { save_default_payment_method: "on_subscription" },
-        expand: ["latest_invoice.payment_intent"],
-        metadata: {
-          userId: user._id.toString(),
-          plan,
-          discountCode: discount.code || "",
-          source: "secret_work_app",
-        },
+    // No idempotency key here — Stripe caches responses for 24h per key.
+    // If the user retries after a network drop, the cached subscription's PI
+    // may be expired. The pendingSub check above already prevents duplicates.
+    const subscription = await stripe.subscriptions.create({
+      customer: customerId,
+      items: [{ price: priceId }],
+      payment_behavior: "default_incomplete",
+      payment_settings: { save_default_payment_method: "on_subscription" },
+      expand: ["latest_invoice.payment_intent"],
+      metadata: {
+        userId: user._id.toString(),
+        plan,
+        discountCode: discount.code || "",
+        source: "secret_work_app",
       },
-      { idempotencyKey }
-    );
+    });
 
     // Robustly extract the PaymentIntent client_secret.
     // latest_invoice may be a string ID if expansion failed.
     let invoice = subscription.latest_invoice;
     let paymentIntent = invoice?.payment_intent;
+
+    // Log what Stripe actually returned for debugging
+    console.log("Google Pay subscription created:", {
+      subId: subscription.id,
+      subStatus: subscription.status,
+      invoiceType: typeof invoice,
+      invoiceId: invoice ? (typeof invoice === "string" ? invoice : invoice.id) : null,
+      invoiceStatus: invoice?.status,
+      piType: typeof paymentIntent,
+      piStatus: paymentIntent?.status,
+      hasClientSecret: !!paymentIntent?.client_secret,
+    });
 
     // If expansion didn't work, manually retrieve the invoice
     if (!paymentIntent?.client_secret && invoice) {
@@ -558,6 +562,12 @@ checkoutRouter.post("/google-pay-intent", authMiddleware, async (req, res) => {
         });
         paymentIntent = retrievedInvoice.payment_intent;
         invoice = retrievedInvoice;
+        console.log("Google Pay: manual invoice retrieval succeeded:", {
+          invoiceId: retrievedInvoice.id,
+          invoiceStatus: retrievedInvoice.status,
+          piStatus: paymentIntent?.status,
+          hasClientSecret: !!paymentIntent?.client_secret,
+        });
       } catch (e) {
         console.error("Google Pay: failed to retrieve invoice manually:", e.message);
       }
