@@ -720,9 +720,7 @@ checkoutRouter.post("/confirm-google-pay", authMiddleware, async (req, res) => {
 
     let sub;
     try {
-      sub = await stripe.subscriptions.retrieve(subId, {
-        expand: ["latest_invoice.payment_intent", "latest_invoice.payments.payment_intent"],
-      });
+      sub = await stripe.subscriptions.retrieve(subId);
     } catch {
       return res.json({ activated: false });
     }
@@ -833,88 +831,17 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
     }
 
     // If no subscription found yet, search by customer (handles race condition
-    // where webhook hasn't fired after checkout).  Also look for incomplete subs
-    // whose PI may have succeeded client-side (Google Pay flow).
+    // where webhook hasn't fired after checkout).
     if (!subscription && user.stripeCustomerId) {
       try {
         const subs = await stripe.subscriptions.list({
           customer: user.stripeCustomerId,
-          status: "all",
           limit: 10,
         });
-        // Prefer active/trialing, fall back to incomplete that we can rescue
-        const active = subs.data.find(
+        // Prefer active/trialing
+        subscription = subs.data.find(
           (s) => ["active", "trialing"].includes(s.status)
-        );
-        if (active) {
-          subscription = active;
-        } else {
-          // Look for incomplete subs whose invoice PI may have already succeeded
-          const incomplete = subs.data.find((s) => s.status === "incomplete");
-          if (incomplete) {
-            subscription = incomplete;
-            // Try to rescue: check if the PI was already paid
-            try {
-              const invId =
-                typeof incomplete.latest_invoice === "string"
-                  ? incomplete.latest_invoice
-                  : incomplete.latest_invoice?.id;
-              if (invId) {
-                const inv = await stripe.invoices.retrieve(invId, {
-                  expand: ["payments.payment_intent"],
-                });
-                // Basil API: check payments array
-                if (inv.payments?.data?.length) {
-                  const paidPI = inv.payments.data.find(
-                    (p) =>
-                      p.payment?.type === "payment_intent" &&
-                      p.payment?.payment_intent
-                  );
-                  const piId = paidPI
-                    ? typeof paidPI.payment.payment_intent === "string"
-                      ? paidPI.payment.payment_intent
-                      : paidPI.payment.payment_intent?.id
-                    : null;
-                  if (piId) {
-                    const pi = await stripe.paymentIntents.retrieve(piId);
-                    if (pi.status === "succeeded") {
-                      // PI succeeded but subscription still incomplete —
-                      // manually pay the invoice to activate it.
-                      await stripe.invoices.pay(invId, {
-                        payment_intent: piId,
-                      });
-                      console.log(
-                        `Self-heal: manually paid invoice ${invId} with PI ${piId}`
-                      );
-                      // Re-retrieve subscription after paying
-                      subscription = await stripe.subscriptions.retrieve(
-                        incomplete.id
-                      );
-                    }
-                  }
-                }
-                // Legacy fallback
-                if (
-                  inv.payment_intent &&
-                  typeof inv.payment_intent === "object" &&
-                  inv.payment_intent.status === "succeeded"
-                ) {
-                  await stripe.invoices.pay(invId, {
-                    payment_intent: inv.payment_intent.id,
-                  });
-                  subscription = await stripe.subscriptions.retrieve(
-                    incomplete.id
-                  );
-                }
-              }
-            } catch (e) {
-              console.error(
-                "Self-heal: failed to rescue incomplete sub:",
-                e.message
-              );
-            }
-          }
-        }
+        ) || subs.data[0] || null;
       } catch {
         // ignore
       }
@@ -963,7 +890,7 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
             : "Pro",
     });
   } catch (error) {
-    console.error("Subscription status error:", error.message || error);
+    console.error("Subscription status error:", error.message || error, error.stack);
     res.status(500).json({ error: "Failed to get subscription status" });
   }
 });
