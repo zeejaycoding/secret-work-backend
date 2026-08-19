@@ -434,7 +434,7 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
       console.warn("Subscription: invoice missing PI, retrieving manually:", invoiceId);
       try {
         const retrievedInvoice = await stripe.invoices.retrieve(invoiceId, {
-          expand: ["payments.payment_intent"],
+          expand: ["payments.data.payment_intent"],
         });
         invoice = retrievedInvoice;
         const ip = retrievedInvoice.payments?.data?.find(
@@ -524,7 +524,7 @@ checkoutRouter.post("/google-pay-intent", authMiddleware, async (req, res) => {
               ? pendingSub.latest_invoice
               : pendingSub.latest_invoice.id;
           const invoice = await stripe.invoices.retrieve(invoiceId, {
-            expand: ["payments.payment_intent"],
+            expand: ["payments.data.payment_intent"],
           });
           // Check both legacy and basil API for the PI
           let pi = invoice.payment_intent;
@@ -629,7 +629,7 @@ checkoutRouter.post("/google-pay-intent", authMiddleware, async (req, res) => {
       console.warn("Google Pay: invoice missing PI, retrieving manually:", invoiceId);
       try {
         const retrievedInvoice = await stripe.invoices.retrieve(invoiceId, {
-          expand: ["payments.payment_intent"],
+          expand: ["payments.data.payment_intent"],
         });
         invoice = retrievedInvoice;
         const invoicePayment = retrievedInvoice.payments?.data?.find(
@@ -751,7 +751,7 @@ checkoutRouter.post("/confirm-google-pay", authMiddleware, async (req, res) => {
 
       try {
         const inv = await stripe.invoices.retrieve(invId, {
-          expand: ["payments.payment_intent"],
+          expand: ["payments.data.payment_intent"],
         });
 
         // Find succeeded PI (basil or legacy)
