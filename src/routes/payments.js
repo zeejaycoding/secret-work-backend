@@ -711,6 +711,23 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
     const isActive =
       subscription && ["active", "trialing"].includes(subscription.status);
 
+    // Self-heal: if Stripe says active but DB says free, sync the DB.
+    // This covers the gap between payment confirmation and webhook delivery.
+    if (isActive && user.subscriptionTier !== "pro") {
+      user.subscriptionTier = "pro";
+      user.stripeSubscriptionId = subscription.id;
+      user.billingInterval = getInterval(subscription);
+      if (subscription.current_period_end) {
+        user.subscriptionExpiry = new Date(subscription.current_period_end * 1000);
+      }
+      const price = subscription.items?.data?.[0]?.price?.unit_amount;
+      if (price != null) {
+        user.subscriptionAmount = price / 100;
+      }
+      await user.save();
+      console.log(`Self-heal: ${user.email} upgraded to pro via subscription status check`);
+    }
+
     const interval = getInterval(subscription);
 
     const subscriptionAmount =
