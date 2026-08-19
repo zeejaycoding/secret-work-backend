@@ -5,6 +5,7 @@ const { User } = require("../models/User");
 const Plan = require("../models/Plan");
 const Transaction = require("../models/Transaction");
 const DiscountCode = require("../models/DiscountCode");
+const StripeEvent = require("../models/StripeEvent");
 const { env } = require("../config/env");
 const { authMiddleware } = require("../middleware/auth");
 const { upsertTransaction } = require("../services/transactions");
@@ -250,7 +251,7 @@ checkoutRouter.post("/checkout", authMiddleware, async (req, res) => {
     const session = await stripe.checkout.sessions.create({
       customer: customerId,
       mode: "subscription",
-      payment_method_types: ["card"],
+      automatic_payment_methods: { enabled: true },
       line_items: [
         {
           price_data: {
@@ -341,6 +342,11 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
       return;
     }
 
+    if (setupIntent.customer !== user.stripeCustomerId) {
+      res.status(403).json({ error: "Setup intent does not belong to this customer" });
+      return;
+    }
+
     if (setupIntent.status !== "succeeded") {
       res.status(400).json({ error: "Setup intent has not been confirmed" });
       return;
@@ -361,33 +367,62 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
 
     await cancelAbandonedSubscriptions(user.stripeCustomerId);
 
-    const existingSubs = await stripe.subscriptions.list({
+    const existingSubsAll = await stripe.subscriptions.list({
       customer: user.stripeCustomerId,
-      status: "active",
-      limit: 1,
+      status: "all",
+      limit: 100,
     });
-    if (existingSubs.data.length > 0) {
-      return res.json({ subscriptionId: existingSubs.data[0].id, alreadyPaid: true });
+    const pendingSub = existingSubsAll.data.find(
+      (sub) =>
+        ["active", "trialing", "incomplete", "past_due"].includes(sub.status) &&
+        sub.metadata?.source === "secret_work_app"
+    );
+    if (pendingSub) {
+      if (pendingSub.status === "active" || pendingSub.status === "trialing") {
+        return res.json({ subscriptionId: pendingSub.id, alreadyPaid: true });
+      }
+      // Incomplete sub exists — don't create another
+      return res.json({ subscriptionId: pendingSub.id, alreadyPaid: false });
     }
 
     const priceId = await getOrCreatePrice(plan, discount.unitAmount);
 
-    const subscription = await stripe.subscriptions.create({
-      customer: user.stripeCustomerId,
-      items: [{ price: priceId }],
-      default_payment_method: paymentMethodId,
-      payment_behavior: "default_incomplete",
-      expand: ["latest_invoice.payment_intent"],
-      metadata: {
-        userId: user._id.toString(),
-        plan,
-        discountCode: discount.code || "",
-        source: "secret_work_app",
-      },
-    });
+    const idempotencyKey = `setup-sub:${user._id.toString()}:${plan}:${discount.code || "none"}`;
 
-    const invoice = subscription.latest_invoice;
-    const pi = invoice?.payment_intent;
+    const subscription = await stripe.subscriptions.create(
+      {
+        customer: user.stripeCustomerId,
+        items: [{ price: priceId }],
+        default_payment_method: paymentMethodId,
+        payment_behavior: "default_incomplete",
+        expand: ["latest_invoice.payment_intent"],
+        metadata: {
+          userId: user._id.toString(),
+          plan,
+          discountCode: discount.code || "",
+          source: "secret_work_app",
+        },
+      },
+      { idempotencyKey }
+    );
+
+    let invoice = subscription.latest_invoice;
+    let pi = invoice?.payment_intent;
+
+    // If expansion didn't work, manually retrieve the invoice
+    if (!pi && invoice) {
+      const invoiceId = typeof invoice === "string" ? invoice : invoice.id;
+      console.warn("Subscription: latest_invoice not expanded, retrieving manually:", invoiceId);
+      try {
+        const retrievedInvoice = await stripe.invoices.retrieve(invoiceId, {
+          expand: ["payment_intent"],
+        });
+        pi = retrievedInvoice.payment_intent;
+        invoice = retrievedInvoice;
+      } catch (e) {
+        console.error("Subscription: failed to retrieve invoice manually:", e.message);
+      }
+    }
 
     // Webhook (invoice.paid) is the only thing that grants Pro access.
     // Here we just report the subscription/PI state so the client knows
@@ -432,13 +467,42 @@ checkoutRouter.post("/google-pay-intent", authMiddleware, async (req, res) => {
 
     await cancelAbandonedSubscriptions(customerId);
 
+    // Check ALL pending/incomplete subscriptions, not just active ones,
+    // to prevent duplicate subscriptions from race conditions.
     const existingSubs = await stripe.subscriptions.list({
       customer: customerId,
-      status: "active",
-      limit: 1,
+      status: "all",
+      limit: 100,
     });
-    if (existingSubs.data.length > 0) {
-      return res.json({ alreadyPaid: true });
+    const pendingSub = existingSubs.data.find(
+      (sub) =>
+        ["active", "trialing", "incomplete", "past_due"].includes(sub.status) &&
+        sub.metadata?.source === "secret_work_app"
+    );
+    if (pendingSub) {
+      // If there's an incomplete sub, try to retrieve its invoice PI for the client
+      if (pendingSub.status === "incomplete" && pendingSub.latest_invoice) {
+        try {
+          const invoiceId =
+            typeof pendingSub.latest_invoice === "string"
+              ? pendingSub.latest_invoice
+              : pendingSub.latest_invoice.id;
+          const invoice = await stripe.invoices.retrieve(invoiceId, {
+            expand: ["payment_intent"],
+          });
+          const pi = invoice.payment_intent;
+          if (pi?.client_secret) {
+            return res.json({
+              clientSecret: pi.client_secret,
+              subscriptionId: pendingSub.id,
+              amount: pendingSub.items.data[0]?.price?.unit_amount || 0,
+            });
+          }
+        } catch (e) {
+          console.error("Google Pay: failed to retrieve pending sub invoice:", e.message);
+        }
+      }
+      return res.json({ alreadyPaid: pendingSub.status === "active" || pendingSub.status === "trialing" });
     }
 
     const selectedPlan = await getPlanConfig(plan);
@@ -450,25 +514,54 @@ checkoutRouter.post("/google-pay-intent", authMiddleware, async (req, res) => {
 
     const priceId = await getOrCreatePrice(plan, discount.unitAmount);
 
-    const subscription = await stripe.subscriptions.create({
-      customer: customerId,
-      items: [{ price: priceId }],
-      payment_behavior: "default_incomplete",
-      payment_settings: { save_default_payment_method: "on_subscription" },
-      expand: ["latest_invoice.payment_intent"],
-      metadata: {
-        userId: user._id.toString(),
-        plan,
-        discountCode: discount.code || "",
-        source: "secret_work_app",
-      },
-    });
+    // Use idempotency key to prevent duplicate subscriptions on retry
+    const idempotencyKey = `google-pay-sub:${user._id.toString()}:${plan}:${discount.code || "none"}`;
 
-    const invoice = subscription.latest_invoice;
-    const paymentIntent = invoice?.payment_intent;
+    const subscription = await stripe.subscriptions.create(
+      {
+        customer: customerId,
+        items: [{ price: priceId }],
+        payment_behavior: "default_incomplete",
+        payment_settings: { save_default_payment_method: "on_subscription" },
+        expand: ["latest_invoice.payment_intent"],
+        metadata: {
+          userId: user._id.toString(),
+          plan,
+          discountCode: discount.code || "",
+          source: "secret_work_app",
+        },
+      },
+      { idempotencyKey }
+    );
+
+    // Robustly extract the PaymentIntent client_secret.
+    // latest_invoice may be a string ID if expansion failed.
+    let invoice = subscription.latest_invoice;
+    let paymentIntent = invoice?.payment_intent;
+
+    // If expansion didn't work, manually retrieve the invoice
+    if (!paymentIntent?.client_secret && invoice) {
+      const invoiceId = typeof invoice === "string" ? invoice : invoice.id;
+      console.warn("Google Pay: latest_invoice not expanded, retrieving manually:", invoiceId);
+      try {
+        const retrievedInvoice = await stripe.invoices.retrieve(invoiceId, {
+          expand: ["payment_intent"],
+        });
+        paymentIntent = retrievedInvoice.payment_intent;
+        invoice = retrievedInvoice;
+      } catch (e) {
+        console.error("Google Pay: failed to retrieve invoice manually:", e.message);
+      }
+    }
 
     if (!paymentIntent?.client_secret) {
-      console.error("Google Pay: missing PaymentIntent client_secret", subscription.id);
+      console.error("Google Pay: missing PaymentIntent client_secret", {
+        subscriptionId: subscription.id,
+        subscriptionStatus: subscription.status,
+        invoiceId: invoice ? (typeof invoice === "string" ? invoice : invoice.id) : null,
+        invoiceStatus: invoice?.status,
+        piStatus: paymentIntent?.status,
+      });
       res.status(500).json({ error: "Failed to create payment intent" });
       return;
     }
@@ -606,6 +699,18 @@ webhookRouter.post(
       return;
     }
 
+    // Deduplicate: Stripe may deliver the same event more than once.
+    // Atomic claim — only the first request wins.
+    const claimed = await StripeEvent.findOneAndUpdate(
+      { eventId: event.id },
+      { $setOnInsert: { eventId: event.id, type: event.type, processedAt: new Date() } },
+      { upsert: true, new: true, rawResult: true }
+    );
+    if (!claimed.value) {
+      // Duplicate key error = another request claimed it first.
+      return res.json({ received: true });
+    }
+
     let processingError = null;
 
     try {
@@ -617,7 +722,8 @@ webhookRouter.post(
           if (userId) {
             const user = await User.findById(userId);
             if (user) {
-              user.subscriptionTier = "pro";
+              // Save subscription metadata only — do NOT grant Pro here.
+              // invoice.paid is the single authoritative access grant.
               user.stripeSubscriptionId = session.subscription;
               user.billingInterval = toBillingInterval(session.metadata?.plan);
               if (session.amount_total != null) {
@@ -638,29 +744,7 @@ webhookRouter.post(
               }
 
               await user.save();
-              console.log(`User ${user.email} upgraded to pro`);
-
-              try {
-                await upsertTransaction({
-                  invoiceId: session.invoice || "",
-                  chargeId: session.payment_intent || "",
-                  subscriptionId: session.subscription || "",
-                  userId: user._id,
-                  userEmail: user.email,
-                  userName: `${user.firstName || ""} ${user.lastName || ""}`.trim(),
-                  plan: toBillingInterval(session.metadata?.plan) || "",
-                  amount: (session.amount_total || 0) / 100,
-                  status: "success",
-                  date: new Date(),
-                  discountCode: session.metadata?.discountCode || "",
-                });
-
-                if (session.metadata?.discountCode) {
-                  await recordDiscountUsage(session.metadata.discountCode, user._id);
-                }
-              } catch (txErr) {
-                console.error("Record checkout transaction error:", txErr.message || txErr);
-              }
+              console.log(`Checkout session completed for ${user.email} — metadata saved`);
             }
           }
           break;
@@ -702,8 +786,8 @@ webhookRouter.post(
                 await user.save();
               }
 
-              // Record discount usage from subscription metadata for ALL flows
-              // (checkout, Google Pay, PaymentSheet) — idempotent via upsertTransaction.
+              // Record discount usage — protected by usedBy $ne check,
+              // so duplicate invoice.paid retries won't double-count.
               if (sub.metadata?.discountCode) {
                 await recordDiscountUsage(sub.metadata.discountCode, user._id);
               }
@@ -737,6 +821,21 @@ webhookRouter.post(
             ? await User.findOne({ stripeCustomerId: invoice.customer })
             : null;
           const interval = await resolveInvoiceInterval(invoice);
+
+          // Downgrade access on failed payment.
+          if (user && invoice.subscription) {
+            try {
+              const sub = await stripe.subscriptions.retrieve(invoice.subscription);
+              if (["past_due", "unpaid", "canceled"].includes(sub.status)) {
+                user.subscriptionTier = "free";
+                await user.save();
+                console.log(`User ${user.email} downgraded to free — invoice payment failed`);
+              }
+            } catch (err) {
+              console.error("Failed to retrieve subscription from invoice.payment_failed:", err.message);
+            }
+          }
+
           await upsertTransaction({
             invoiceId: invoice.id,
             chargeId: invoice.payment_intent || "",
