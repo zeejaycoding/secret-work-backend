@@ -16,6 +16,7 @@ const transactionSchema = new mongoose.Schema(
     stripeChargeId: { type: String, default: "" },
     stripeSubscriptionId: { type: String, default: "" },
     discountCode: { type: String, default: "" },
+    paymentMethod: { type: String, enum: ["card", "apple_pay", "google_pay", "link", ""], default: "" },
     date: { type: Date, default: Date.now },
   },
   { timestamps: true }

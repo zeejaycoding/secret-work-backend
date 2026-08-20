@@ -10,6 +10,7 @@ async function upsertTransaction(payload) {
     status,
     amount,
     discountCode,
+    paymentMethod,
   } = payload;
 
   let tx = null;
@@ -48,6 +49,10 @@ async function upsertTransaction(payload) {
       tx.discountCode = discountCode;
       changed = true;
     }
+    if (paymentMethod && !tx.paymentMethod) {
+      tx.paymentMethod = paymentMethod;
+      changed = true;
+    }
     if (changed) await tx.save();
     return tx;
   }
@@ -64,6 +69,7 @@ async function upsertTransaction(payload) {
       stripeChargeId: chargeId || "",
       stripeSubscriptionId: subscriptionId || "",
       discountCode: discountCode || "",
+      paymentMethod: paymentMethod || "",
       date: payload.date || new Date(),
     });
   } catch (error) {

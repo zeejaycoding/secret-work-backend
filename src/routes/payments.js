@@ -375,6 +375,9 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
       customer: customerId,
       items: [{ price: priceId }],
       payment_behavior: "default_incomplete",
+      payment_settings: {
+        save_default_payment_method: "on_subscription",
+      },
       expand: ["latest_invoice.payment_intent"],
       metadata: {
         userId: user._id.toString(),
@@ -651,6 +654,23 @@ webhookRouter.post(
             }
           }
 
+          // Extract payment method type from invoice charges
+          let paymentMethodType = "";
+          try {
+            if (chargeId) {
+              const pi = await stripe.paymentIntents.retrieve(chargeId);
+              const pmType = pi?.charges?.data?.[0]?.payment_method_details?.type;
+              if (pmType) paymentMethodType = pmType;
+            }
+            if (!paymentMethodType && invoice.account_name) {
+              const acct = invoice.account_name.toLowerCase();
+              if (acct.includes("apple")) paymentMethodType = "apple_pay";
+              else if (acct.includes("google")) paymentMethodType = "google_pay";
+            }
+          } catch {
+            // Best effort — don't block payment processing
+          }
+
           // Grant Pro access on successful payment — this is the single
           // authoritative point for access grants after initial checkout.
           if (user && invoice.subscription) {
@@ -702,6 +722,7 @@ webhookRouter.post(
             plan: toBillingInterval(interval) || "",
             amount: (invoice.amount_paid || 0) / 100,
             status: "success",
+            paymentMethod: paymentMethodType,
             date: new Date(
               (invoice.status_transitions?.paid_at || invoice.created) * 1000
             ),
