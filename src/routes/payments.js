@@ -375,7 +375,6 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
       customer: customerId,
       items: [{ price: priceId }],
       payment_behavior: "default_incomplete",
-      expand: ["latest_invoice.payment_intent"],
       metadata: {
         userId: user._id.toString(),
         plan,
@@ -399,7 +398,7 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
         console.log(`Subscription: ${user.email} activated immediately (${subscription.status})`);
       }
       await upsertTransaction({
-        invoiceId: subscription.latest_invoice?.id || "",
+        invoiceId: typeof subscription.latest_invoice === "string" ? subscription.latest_invoice : subscription.latest_invoice?.id || "",
         chargeId: "",
         subscriptionId: subscription.id,
         userId: user._id,
@@ -414,113 +413,52 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
       return;
     }
 
-    // ── Get PaymentIntent client secret for PaymentSheet ──
-    // Try multiple strategies since expand can be unreliable
+    // ── Use SetupIntent instead of invoice PI — always reliable ──
+    // After setup completes, the payment method attaches to the customer
+    // and we manually pay the open invoice via the webhook or here.
     let clientSecret = null;
 
-    // Strategy 1: From expanded subscription response
-    clientSecret = subscription.latest_invoice?.payment_intent?.client_secret || null;
-    if (clientSecret) {
-      console.log(`Subscription: got PI from expanded response`);
-    }
-
-    // Strategy 2: Retrieve invoice directly with expand
-    if (!clientSecret && subscription.latest_invoice?.id) {
+    // First: try invoice PI directly (fast path if it works)
+    const invoiceId = subscription.latest_invoice;
+    if (invoiceId) {
       try {
-        const inv = await stripe.invoices.retrieve(subscription.latest_invoice.id, {
+        const inv = await stripe.invoices.retrieve(typeof invoiceId === "string" ? invoiceId : invoiceId.id, {
           expand: ["payment_intent"],
         });
         clientSecret = inv.payment_intent?.client_secret || null;
         if (clientSecret) console.log(`Subscription: got PI from invoice retrieve`);
       } catch (e) {
-        console.log(`Subscription: invoice retrieve failed: ${e.message}`);
+        console.log(`Subscription: invoice PI retrieve failed: ${e.message}`);
       }
     }
 
-    // Strategy 3: List invoices for subscription
+    // Fallback: create a SetupIntent — guaranteed to always work
     if (!clientSecret) {
-      try {
-        const invList = await stripe.invoices.list({ subscription: subscription.id, limit: 5 });
-        for (const inv of invList.data) {
-          if (inv.payment_intent) {
-            const piId = typeof inv.payment_intent === "string" ? inv.payment_intent : inv.payment_intent.id;
-            const pi = await stripe.paymentIntents.retrieve(piId);
-            if (pi?.client_secret) {
-              clientSecret = pi.client_secret;
-              console.log(`Subscription: got PI from invoices.list`);
-              break;
-            }
-          }
-        }
-      } catch (e) {
-        console.log(`Subscription: invoices.list failed: ${e.message}`);
-      }
-    }
-
-    // Strategy 4: If invoice exists but has no PI, finalize it then retrieve
-    if (!clientSecret && subscription.latest_invoice?.id) {
-      try {
-        const inv = await stripe.invoices.finalizeInvoice(subscription.latest_invoice.id);
-        console.log(`Subscription: finalized invoice ${inv.id}, status=${inv.status}`);
-        const invAfter = await stripe.invoices.retrieve(inv.id, { expand: ["payment_intent"] });
-        clientSecret = invAfter.payment_intent?.client_secret || null;
-        if (clientSecret) console.log(`Subscription: got PI after finalizing invoice`);
-      } catch (e) {
-        console.log(`Subscription: finalize invoice failed: ${e.message}`);
-      }
-    }
-
-    // Strategy 5: Wait briefly and retry invoice retrieve (Stripe sometimes needs a moment)
-    if (!clientSecret) {
-      try {
-        await new Promise((r) => setTimeout(r, 2000));
-        const invList = await stripe.invoices.list({ subscription: subscription.id, limit: 5 });
-        for (const inv of invList.data) {
-          if (inv.payment_intent) {
-            const piId = typeof inv.payment_intent === "string" ? inv.payment_intent : inv.payment_intent.id;
-            const pi = await stripe.paymentIntents.retrieve(piId);
-            if (pi?.client_secret) {
-              clientSecret = pi.client_secret;
-              console.log(`Subscription: got PI after delay retry`);
-              break;
-            }
-          }
-          // Try finalizing draft invoices
-          if (inv.status === "draft") {
-            try {
-              const finalized = await stripe.invoices.finalizeInvoice(inv.id);
-              const refreshed = await stripe.invoices.retrieve(finalized.id, { expand: ["payment_intent"] });
-              if (refreshed.payment_intent?.client_secret) {
-                clientSecret = refreshed.payment_intent.client_secret;
-                console.log(`Subscription: got PI after finalizing draft invoice`);
-                break;
-              }
-            } catch {}
-          }
-        }
-      } catch (e) {
-        console.log(`Subscription: delay retry failed: ${e.message}`);
-      }
+      const setupIntent = await stripe.setupIntents.create({
+        customer: customerId,
+        usage: "off_session",
+        payment_method_types: ["card"],
+        metadata: {
+          userId: user._id.toString(),
+          subscriptionId: subscription.id,
+          plan,
+          source: "secret_work_app",
+        },
+      });
+      clientSecret = setupIntent.client_secret;
+      console.log(`Subscription: created SetupIntent ${setupIntent.id} as fallback`);
     }
 
     if (clientSecret) {
+      const isSetupIntent = clientSecret.startsWith("seti_");
       res.json({
         subscriptionId: subscription.id,
         clientSecret,
+        clientSecretType: isSetupIntent ? "setup_intent" : "payment_intent",
         alreadyPaid: false,
       });
     } else {
-      console.log(`Subscription: ALL strategies failed for ${subscription.id}. Status: ${subscription.status}`);
-      // Cancel orphaned subscription ONLY if still incomplete (webhook may have paid it)
-      try {
-        const recheck = await stripe.subscriptions.retrieve(subscription.id);
-        if (recheck.status === "incomplete") {
-          await stripe.subscriptions.cancel(subscription.id);
-          console.log(`Subscription: cancelled orphan ${subscription.id}`);
-        } else {
-          console.log(`Subscription: skip cancel — status now ${recheck.status}`);
-        }
-      } catch {}
+      console.log(`Subscription: no clientSecret for ${subscription.id}`);
       res.status(500).json({ error: "Payment initialization failed. Please try again." });
     }
   } catch (error) {
@@ -869,6 +807,38 @@ webhookRouter.post(
               ? new Date(invoice.created * 1000)
               : new Date(),
           });
+          break;
+        }
+
+        case "setup_intent.succeeded": {
+          const setupIntent = event.data.object;
+          const subId = setupIntent.metadata?.subscriptionId;
+          const userId = setupIntent.metadata?.userId;
+
+          if (subId) {
+            try {
+              const sub = await stripe.subscriptions.retrieve(subId);
+              if (sub.status === "incomplete" && sub.latest_invoice) {
+                // Attach the payment method to the customer then pay the invoice
+                const invoiceId = typeof sub.latest_invoice === "string"
+                  ? sub.latest_invoice
+                  : sub.latest_invoice.id;
+                const invoice = await stripe.invoices.retrieve(invoiceId);
+
+                if (setupIntent.payment_method) {
+                  const pmId = typeof setupIntent.payment_method === "string"
+                    ? setupIntent.payment_method
+                    : setupIntent.payment_method.id;
+                  await stripe.invoices.pay(invoiceId, {
+                    payment_method: pmId,
+                  });
+                  console.log(`SetupIntent: paid invoice ${invoiceId} for sub ${subId}`);
+                }
+              }
+            } catch (e) {
+              console.log(`SetupIntent: failed to pay invoice for sub ${subId}: ${e.message}`);
+            }
+          }
           break;
         }
 
