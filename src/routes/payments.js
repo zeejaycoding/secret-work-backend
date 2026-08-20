@@ -291,7 +291,7 @@ checkoutRouter.post("/setup-intent", authMiddleware, async (req, res) => {
 
     const setupIntent = await stripe.setupIntents.create({
       customer: customerId,
-      automatic_payment_methods: { enabled: true },
+      payment_method_types: ["card"],
     });
 
     res.json({
@@ -540,7 +540,7 @@ checkoutRouter.post("/google-pay-intent", authMiddleware, async (req, res) => {
 
     const setupIntent = await stripe.setupIntents.create({
       customer: customerId,
-      automatic_payment_methods: { enabled: true },
+      payment_method_types: ["card"],
     });
 
     res.json({
