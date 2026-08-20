@@ -494,23 +494,29 @@ checkoutRouter.post("/confirm-subscription", authMiddleware, async (req, res) =>
         if (priceAmount != null) user.subscriptionAmount = priceAmount / 100;
         await user.save();
         console.log(`[confirm-sub] synced ${user.email} to pro (was already active)`);
+      }
 
-        // Backfill transaction for admin panel
-        const hasTx = await Transaction.findOne({ stripeSubscriptionId: sub.id, status: "success" }).lean();
-        if (!hasTx) {
-          await upsertTransaction({
-            invoiceId: typeof sub.latest_invoice === "string" ? sub.latest_invoice : sub.latest_invoice?.id || "",
-            chargeId: "",
-            subscriptionId: sub.id,
-            userId: user._id,
-            userEmail: user.email,
-            userName: `${user.firstName || ""} ${user.lastName || ""}`.trim(),
-            plan: toBillingInterval(getInterval(sub)) || "",
-            amount: priceAmount != null ? priceAmount / 100 : 0,
-            status: "success",
-            date: new Date(),
-          });
-        }
+      // Always backfill transaction if missing (regardless of pro status)
+      const invoiceIdStr = typeof sub.latest_invoice === "string" ? sub.latest_invoice : sub.latest_invoice?.id || "";
+      const hasTx = invoiceIdStr
+        ? await Transaction.findOne({ stripeInvoiceId: invoiceIdStr }).lean()
+        : null;
+      if (!hasTx && invoiceIdStr) {
+        const item = sub.items?.data?.[0];
+        const priceAmount = item?.price?.unit_amount || item?.plan?.amount;
+        await upsertTransaction({
+          invoiceId: invoiceIdStr,
+          chargeId: "",
+          subscriptionId: sub.id,
+          userId: user._id,
+          userEmail: user.email,
+          userName: `${user.firstName || ""} ${user.lastName || ""}`.trim(),
+          plan: toBillingInterval(getInterval(sub)) || "",
+          amount: priceAmount != null ? priceAmount / 100 : 0,
+          status: "success",
+          date: new Date(),
+        });
+        console.log(`[confirm-sub] backfilled transaction for ${user.email}`);
       }
       return res.json({ ok: true, alreadyActive: true });
     }
