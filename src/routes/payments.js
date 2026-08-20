@@ -410,6 +410,11 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
       },
     });
 
+    // Always save the subscription ID so GET /subscription can find it during polling.
+    user.stripeSubscriptionId = subscription.id;
+    await user.save();
+    console.log(`Subscription: created ${subscription.id} for ${user.email} (status: ${subscription.status})`);
+
     let invoice = subscription.latest_invoice;
     let pi = invoice?.payment_intent;
 
@@ -451,21 +456,57 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
       }
     }
 
-    // Webhook (invoice.paid) is the single authoritative access grant.
-    // Here we just report the subscription/PI state so the client knows
-    // whether it needs to confirm additional authentication.
-    if (subscription.status === "active") {
+    // If subscription was created as active/trialing, we're done.
+    if (["active", "trialing"].includes(subscription.status)) {
       if (user.subscriptionTier !== "pro") {
         user.subscriptionTier = "pro";
-        user.stripeSubscriptionId = subscription.id;
         if (subscription.current_period_end) {
           user.subscriptionExpiry = new Date(subscription.current_period_end * 1000);
         }
         await user.save();
-        console.log(`Subscription: self-healed ${user.email} to pro (created active)`);
+        console.log(`Subscription: self-healed ${user.email} to pro (created ${subscription.status})`);
       }
       res.json({ subscriptionId: subscription.id, alreadyPaid: true });
-    } else if (pi?.status === "requires_action" && pi?.client_secret) {
+      return;
+    }
+
+    // Subscription is incomplete — try to force-pay the invoice.
+    // With default_payment_method set, Stripe should auto-charge, but basil API
+    // sometimes needs an explicit trigger. invoices.pay() is safe to call even
+    // if the payment is already in progress.
+    const invoiceId = typeof invoice === "string" ? invoice : invoice?.id;
+    if (invoiceId) {
+      try {
+        const paidInvoice = await stripe.invoices.pay(invoiceId, {
+          payment_intent: pi?.id,
+        });
+        console.log(`Subscription: invoice ${invoiceId} pay result: ${paidInvoice.status}`);
+
+        // If invoice paid, refresh subscription status
+        if (paidInvoice.status === "paid") {
+          const refreshed = await stripe.subscriptions.retrieve(subscription.id);
+          if (["active", "trialing"].includes(refreshed.status)) {
+            user.subscriptionTier = "pro";
+            if (refreshed.current_period_end) {
+              user.subscriptionExpiry = new Date(refreshed.current_period_end * 1000);
+            }
+            await user.save();
+            console.log(`Subscription: ${user.email} activated after invoices.pay`);
+            res.json({ subscriptionId: subscription.id, alreadyPaid: true });
+            return;
+          }
+        }
+      } catch (e) {
+        console.log("Subscription: invoices.pay failed:", e.message);
+      }
+    }
+
+    // Re-retrieve the PI after invoices.pay attempt to get fresh status
+    if (pi?.id) {
+      try { pi = await stripe.paymentIntents.retrieve(pi.id); } catch {}
+    }
+
+    if (pi?.status === "requires_action" && pi?.client_secret) {
       res.json({
         subscriptionId: subscription.id,
         requiresAction: true,
@@ -474,7 +515,8 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
     } else if (pi?.status === "requires_payment_method") {
       res.status(402).json({ error: "Payment method was declined. Please try a different card." });
     } else {
-      // Incomplete but not actionable — webhook will handle eventual state
+      // Still incomplete — polling or webhook will handle it
+      console.log(`Subscription: ${subscription.id} still incomplete (PI status: ${pi?.status || "unknown"}), polling will catch it`);
       res.json({ subscriptionId: subscription.id, alreadyPaid: false });
     }
   } catch (error) {
