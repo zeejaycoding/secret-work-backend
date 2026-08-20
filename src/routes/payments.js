@@ -467,9 +467,6 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
   }
 });
 
-// ── Subscription status (read-only) ──
-checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
-
 // ── Confirm subscription payment (called after Google Pay / Card succeeds) ──
 checkoutRouter.post("/confirm-subscription", authMiddleware, async (req, res) => {
   try {
