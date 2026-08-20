@@ -52,6 +52,9 @@ function getInvoiceInterval(invoice) {
   return line?.plan?.interval || line?.price?.recurring?.interval || null;
 }
 
+// getInterval returns "month"/"year" — Transaction.plan enum requires "monthly"/"annual"
+// NOTE: toBillingInterval() already handles this conversion. Use it for plan fields.
+
 async function resolveInvoiceInterval(invoice) {
   const fromLine = getInvoiceInterval(invoice);
   if (fromLine) return fromLine;
@@ -493,7 +496,7 @@ checkoutRouter.post("/confirm-subscription", authMiddleware, async (req, res) =>
         console.log(`[confirm-sub] synced ${user.email} to pro (was already active)`);
 
         // Backfill transaction for admin panel
-        const hasTx = await Transaction.findOne({ subscriptionId: sub.id, status: "success" }).lean();
+        const hasTx = await Transaction.findOne({ stripeSubscriptionId: sub.id, status: "success" }).lean();
         if (!hasTx) {
           await upsertTransaction({
             invoiceId: typeof sub.latest_invoice === "string" ? sub.latest_invoice : sub.latest_invoice?.id || "",
@@ -502,7 +505,7 @@ checkoutRouter.post("/confirm-subscription", authMiddleware, async (req, res) =>
             userId: user._id,
             userEmail: user.email,
             userName: `${user.firstName || ""} ${user.lastName || ""}`.trim(),
-            plan: getInterval(sub) || "",
+            plan: toBillingInterval(getInterval(sub)) || "",
             amount: priceAmount != null ? priceAmount / 100 : 0,
             status: "success",
             date: new Date(),
@@ -533,7 +536,26 @@ checkoutRouter.post("/confirm-subscription", authMiddleware, async (req, res) =>
           user.subscriptionExpiry = new Date(sub.current_period_end * 1000);
         }
         user.billingInterval = getInterval(sub);
+        const item = sub.items?.data?.[0];
+        const priceAmount = item?.price?.unit_amount || item?.plan?.amount;
+        if (priceAmount != null) user.subscriptionAmount = priceAmount / 100;
         await user.save();
+      }
+      // Always backfill transaction if missing
+      const hasTx = await Transaction.findOne({ stripeInvoiceId: invoiceId }).lean();
+      if (!hasTx) {
+        await upsertTransaction({
+          invoiceId: invoiceId,
+          chargeId: "",
+          subscriptionId: sub.id,
+          userId: user._id,
+          userEmail: user.email,
+          userName: `${user.firstName || ""} ${user.lastName || ""}`.trim(),
+          plan: toBillingInterval(getInterval(sub)) || "",
+          amount: (invoice.amount_paid || 0) / 100,
+          status: "success",
+          date: new Date(),
+        });
       }
       return res.json({ ok: true, alreadyActive: true });
     }
@@ -590,6 +612,7 @@ checkoutRouter.post("/confirm-subscription", authMiddleware, async (req, res) =>
     const refreshed = await stripe.subscriptions.retrieve(sub.id);
     const isNowActive = ["active", "trialing"].includes(refreshed.status);
 
+    // Sync user pro status regardless of race — upsertTransaction handles dedup
     if (isNowActive && user.subscriptionTier !== "pro") {
       user.subscriptionTier = "pro";
       if (refreshed.current_period_end) {
@@ -601,8 +624,10 @@ checkoutRouter.post("/confirm-subscription", authMiddleware, async (req, res) =>
       if (priceAmount != null) user.subscriptionAmount = priceAmount / 100;
       await user.save();
       console.log(`[confirm-sub] ${user.email} upgraded to pro`);
+    }
 
-      // Create transaction for admin panel
+    // Always create transaction if we paid (dedup by invoice ID)
+    if (paid) {
       await upsertTransaction({
         invoiceId: invoiceId,
         chargeId: "",
@@ -610,8 +635,8 @@ checkoutRouter.post("/confirm-subscription", authMiddleware, async (req, res) =>
         userId: user._id,
         userEmail: user.email,
         userName: `${user.firstName || ""} ${user.lastName || ""}`.trim(),
-        plan: getInterval(refreshed) || "",
-        amount: priceAmount != null ? priceAmount / 100 : 0,
+        plan: toBillingInterval(getInterval(refreshed)) || "",
+        amount: (invoice.amount_paid || 0) / 100,
         status: "success",
         date: new Date(),
       });
@@ -691,7 +716,7 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
           userId: user._id,
           userEmail: user.email,
           userName: `${user.firstName || ""} ${user.lastName || ""}`.trim(),
-          plan: getInterval(subscription) || "",
+          plan: toBillingInterval(getInterval(subscription)) || "",
           amount: subAmount,
           status: "success",
           date: new Date(),
@@ -997,6 +1022,29 @@ webhookRouter.post(
                     await user.save();
                     console.log(`SetupIntent: self-healed ${user.email} to pro (already active)`);
                   }
+                  // Backfill transaction if missing
+                  const invoiceIdStr = typeof sub.latest_invoice === "string"
+                    ? sub.latest_invoice
+                    : sub.latest_invoice?.id;
+                  if (invoiceIdStr) {
+                    const hasTx = await Transaction.findOne({ stripeInvoiceId: invoiceIdStr }).lean();
+                    if (!hasTx) {
+                      const item = sub.items?.data?.[0];
+                      const priceAmount = item?.price?.unit_amount || item?.plan?.amount;
+                      await upsertTransaction({
+                        invoiceId: invoiceIdStr,
+                        chargeId: "",
+                        subscriptionId: subId,
+                        userId: user?._id,
+                        userEmail: user?.email || "",
+                        userName: user ? `${user.firstName || ""} ${user.lastName || ""}`.trim() : "",
+                        plan: toBillingInterval(getInterval(sub)) || "",
+                        amount: priceAmount != null ? priceAmount / 100 : 0,
+                        status: "success",
+                        date: new Date(),
+                      });
+                    }
+                  }
                 }
                 break;
               }
@@ -1046,23 +1094,26 @@ webhookRouter.post(
                     user.billingInterval = getInterval(refreshedSub);
                     await user.save();
                     console.log(`SetupIntent: self-healed ${user.email} to pro`);
+                  }
 
-                    // Backfill transaction if missing
-                    const hasTx = await Transaction.findOne({ subscriptionId: subId, status: "success" }).lean();
-                    if (!hasTx) {
-                      await upsertTransaction({
-                        invoiceId: invoiceId,
-                        chargeId: "",
-                        subscriptionId: subId,
-                        userId: user._id,
-                        userEmail: user.email,
-                        userName: `${user.firstName || ""} ${user.lastName || ""}`.trim(),
-                        plan: getInterval(refreshedSub) || "",
-                        amount: priceAmount != null ? priceAmount / 100 : 0,
-                        status: "success",
-                        date: new Date(),
-                      });
-                    }
+                  // Always backfill transaction if missing (dedup by invoice ID)
+                  const hasTx = invoiceId ? await Transaction.findOne({ stripeInvoiceId: invoiceId }).lean() : null;
+                  if (!hasTx && invoiceId) {
+                    const userDoc = userId ? await User.findById(userId) : null;
+                    const item = refreshedSub.items?.data?.[0];
+                    const priceAmount = item?.price?.unit_amount || item?.plan?.amount;
+                    await upsertTransaction({
+                      invoiceId: invoiceId,
+                      chargeId: "",
+                      subscriptionId: subId,
+                      userId: userDoc?._id,
+                      userEmail: userDoc?.email || "",
+                      userName: userDoc ? `${userDoc.firstName || ""} ${userDoc.lastName || ""}`.trim() : "",
+                      plan: toBillingInterval(getInterval(refreshedSub)) || "",
+                      amount: priceAmount != null ? priceAmount / 100 : 0,
+                      status: "success",
+                      date: new Date(),
+                    });
                   }
                 }
               }
