@@ -217,7 +217,7 @@ async function cancelAbandonedSubscriptions(customerId) {
       }
     }
   } catch (err) {
-    console.error("Error cancelling abandoned subscriptions:", err.message);
+    console.log("Error cancelling abandoned subscriptions:", err.message);
   }
 }
 
@@ -273,7 +273,7 @@ checkoutRouter.post("/checkout", authMiddleware, async (req, res) => {
 
     res.json({ url: session.url, sessionId: session.id });
   } catch (error) {
-    console.error("Checkout session error:", error.message || error);
+    console.log("Checkout session error:", error.message || error);
     res.status(500).json({ error: "Failed to create checkout session" });
   }
 });
@@ -300,7 +300,7 @@ checkoutRouter.post("/setup-intent", authMiddleware, async (req, res) => {
       customerId,
     });
   } catch (error) {
-    console.error("Setup intent error:", error.message || error);
+    console.log("Setup intent error:", error.message || error);
     res.status(500).json({ error: "Failed to create setup intent" });
   }
 });
@@ -447,7 +447,7 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
           if (piId) pi = await stripe.paymentIntents.retrieve(piId);
         }
       } catch (e) {
-        console.error("Subscription: failed to retrieve invoice manually:", e.message);
+        console.log("Subscription: failed to retrieve invoice manually:", e.message);
       }
     }
 
@@ -478,7 +478,7 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
       res.json({ subscriptionId: subscription.id, alreadyPaid: false });
     }
   } catch (error) {
-    console.error("Create subscription error:", error.message || error);
+    console.log("Create subscription error:", error.message || error);
     res.status(500).json({ error: error.message || "Failed to create subscription" });
   }
 });
@@ -547,14 +547,14 @@ checkoutRouter.post("/google-pay-intent", authMiddleware, async (req, res) => {
             });
           }
         } catch (e) {
-          console.error("Google Pay: failed to retrieve pending sub invoice:", e.message);
+          console.log("Google Pay: failed to retrieve pending sub invoice:", e.message);
         }
         // PI expired/canceled — cancel the stale sub so we can create a fresh one
         try {
           await stripe.subscriptions.cancel(pendingSub.id);
           console.log("Google Pay: cancelled stale incomplete sub:", pendingSub.id);
         } catch (e) {
-          console.error("Google Pay: failed to cancel stale sub:", e.message);
+          console.log("Google Pay: failed to cancel stale sub:", e.message);
         }
       } else {
         // Active/trialing/past_due — already has access or pending payment
@@ -617,7 +617,7 @@ checkoutRouter.post("/google-pay-intent", authMiddleware, async (req, res) => {
           try {
             paymentIntent = await stripe.paymentIntents.retrieve(piId);
           } catch (e) {
-            console.error("Google Pay: failed to retrieve PI from payments:", e.message);
+            console.log("Google Pay: failed to retrieve PI from payments:", e.message);
           }
         }
       }
@@ -644,7 +644,7 @@ checkoutRouter.post("/google-pay-intent", authMiddleware, async (req, res) => {
           }
         }
       } catch (e) {
-        console.error("Google Pay: failed to retrieve invoice manually:", e.message);
+        console.log("Google Pay: failed to retrieve invoice manually:", e.message);
       }
     }
 
@@ -670,12 +670,12 @@ checkoutRouter.post("/google-pay-intent", authMiddleware, async (req, res) => {
         });
         console.log("Google Pay: created and attached PI:", paymentIntent.id, "amount:", invoice.amount_due);
       } catch (e) {
-        console.error("Google Pay: failed to create/attach PI:", e.message);
+        console.log("Google Pay: failed to create/attach PI:", e.message);
       }
     }
 
     if (!paymentIntent?.client_secret) {
-      console.error("Google Pay: missing PaymentIntent client_secret", {
+      console.log("Google Pay: missing PaymentIntent client_secret", {
         subscriptionId: subscription.id,
         subscriptionStatus: subscription.status,
         invoiceId: invoice ? (typeof invoice === "string" ? invoice : invoice.id) : null,
@@ -697,7 +697,7 @@ checkoutRouter.post("/google-pay-intent", authMiddleware, async (req, res) => {
       amount: discount.unitAmount,
     });
   } catch (error) {
-    console.error("Google Pay intent error:", error.message || error);
+    console.log("Google Pay intent error:", error.message || error);
     res.status(500).json({ error: error.message || "Failed to create Google Pay intent" });
   }
 });
@@ -785,7 +785,7 @@ checkoutRouter.post("/confirm-google-pay", authMiddleware, async (req, res) => {
           sub = await stripe.subscriptions.retrieve(sub.id);
         }
       } catch (e) {
-        console.error("Confirm GP: invoice rescue failed:", e.message);
+        console.log("Confirm GP: invoice rescue failed:", e.message);
       }
     }
 
@@ -804,94 +804,87 @@ checkoutRouter.post("/confirm-google-pay", authMiddleware, async (req, res) => {
 
     res.json({ activated: isNowActive });
   } catch (error) {
-    console.error("Confirm GP error:", error.message || error);
+    console.log("Confirm GP error:", error.message || error);
     res.json({ activated: false });
   }
 });
 
 // ── Subscription status (read-only) ──
-// Returns the current state from the database.  Does NOT mutate any user
-// fields — the webhook is the sole source of truth for access/subscription state.
 checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
+  let user;
   try {
-    console.log("GET /subscription hit, userId:", req.auth?.userId);
-    const user = await User.findById(req.auth.userId);
-    if (!user) {
-      res.status(404).json({ error: "User not found" });
-      return;
-    }
-
-    let subscription = null;
-
-    if (user.stripeSubscriptionId) {
-      try {
-        subscription = await stripe.subscriptions.retrieve(user.stripeSubscriptionId);
-      } catch (e) {
-        console.error("Sub status: failed to retrieve sub:", user.stripeSubscriptionId, e.message);
-      }
-    }
-
-    // If no subscription found yet, search by customer (handles race condition
-    // where webhook hasn't fired after checkout).
-    if (!subscription && user.stripeCustomerId) {
-      try {
-        const subs = await stripe.subscriptions.list({
-          customer: user.stripeCustomerId,
-          limit: 10,
-        });
-        subscription = subs.data.find(
-          (s) => ["active", "trialing"].includes(s.status)
-        ) || subs.data[0] || null;
-      } catch (e) {
-        console.error("Sub status: failed to list subs:", e.message);
-      }
-    }
-
-    const isActive =
-      subscription && ["active", "trialing"].includes(subscription.status);
-
-    // Self-heal: if Stripe says active but DB says free, sync the DB.
-    if (isActive && user.subscriptionTier !== "pro") {
-      user.subscriptionTier = "pro";
-      user.stripeSubscriptionId = subscription.id;
-      user.billingInterval = getInterval(subscription);
-      if (subscription.current_period_end) {
-        user.subscriptionExpiry = new Date(subscription.current_period_end * 1000);
-      }
-      const price = subscription.items?.data?.[0]?.price?.unit_amount;
-      if (price != null) {
-        user.subscriptionAmount = price / 100;
-      }
-      await user.save();
-      console.log(`Self-heal: ${user.email} upgraded to pro via subscription status check`);
-    }
-
-    const interval = getInterval(subscription);
-
-    const subscriptionAmount =
-      user.subscriptionAmount != null
-        ? user.subscriptionAmount
-        : subscription?.items?.data?.[0]?.price?.unit_amount != null
-          ? subscription.items.data[0].price.unit_amount / 100
-          : null;
-
-    res.json({
-      tier: user.subscriptionTier,
-      expiry: user.subscriptionExpiry,
-      isActive: !!isActive,
-      plan: interval || null,
-      amount: subscriptionAmount,
-      label:
-        interval === "month"
-          ? "Monthly Pro"
-          : interval === "year"
-            ? "Annual Pro"
-            : "Pro",
-    });
-  } catch (error) {
-    console.error("SUBSCRIPTION STATUS ERROR:", error);
-    res.status(500).json({ error: "Failed to get subscription status" });
+    user = await User.findById(req.auth.userId).lean();
+  } catch (e) {
+    console.log("[sub-status] DB lookup failed:", e.message);
+    return res.json({ tier: "free", isActive: false, plan: null, amount: null, label: "Pro" });
   }
+  if (!user) {
+    return res.json({ tier: "free", isActive: false, plan: null, amount: null, label: "Pro" });
+  }
+
+  let subscription = null;
+
+  if (user.stripeSubscriptionId) {
+    try {
+      subscription = await stripe.subscriptions.retrieve(user.stripeSubscriptionId);
+    } catch (e) {
+      console.log("[sub-status] retrieve sub failed:", e.message);
+    }
+  }
+
+  if (!subscription && user.stripeCustomerId) {
+    try {
+      const subs = await stripe.subscriptions.list({
+        customer: user.stripeCustomerId,
+        limit: 10,
+      });
+      subscription = subs.data.find(
+        (s) => ["active", "trialing"].includes(s.status)
+      ) || subs.data[0] || null;
+    } catch (e) {
+      console.log("[sub-status] list subs failed:", e.message);
+    }
+  }
+
+  const isActive = subscription && ["active", "trialing"].includes(subscription.status);
+
+  // Self-heal: Stripe says active but DB says free → sync.
+  if (isActive && user.subscriptionTier !== "pro") {
+    try {
+      await User.findByIdAndUpdate(user._id, {
+        subscriptionTier: "pro",
+        stripeSubscriptionId: subscription.id,
+        billingInterval: getInterval(subscription),
+        subscriptionExpiry: subscription.current_period_end
+          ? new Date(subscription.current_period_end * 1000)
+          : undefined,
+        subscriptionAmount: subscription.items?.data?.[0]?.price?.unit_amount != null
+          ? subscription.items.data[0].price.unit_amount / 100
+          : undefined,
+      });
+      console.log("[sub-status] self-healed", user.email, "to pro");
+    } catch (e) {
+      console.log("[sub-status] self-heal save failed:", e.message);
+    }
+    // Update local values for response
+    user.subscriptionTier = "pro";
+  }
+
+  const interval = getInterval(subscription);
+  const amount = user.subscriptionAmount != null
+    ? user.subscriptionAmount
+    : subscription?.items?.data?.[0]?.price?.unit_amount != null
+      ? subscription.items.data[0].price.unit_amount / 100
+      : null;
+
+  res.json({
+    tier: user.subscriptionTier || "free",
+    expiry: user.subscriptionExpiry,
+    isActive: !!isActive,
+    plan: interval || null,
+    amount,
+    label: interval === "month" ? "Monthly Pro" : interval === "year" ? "Annual Pro" : "Pro",
+  });
 });
 
 // ── Portal ──
@@ -910,7 +903,7 @@ checkoutRouter.post("/portal", authMiddleware, async (req, res) => {
 
     res.json({ url: session.url });
   } catch (error) {
-    console.error("Portal session error:", error.message || error);
+    console.log("Portal session error:", error.message || error);
     res.status(500).json({ error: "Failed to create portal session" });
   }
 });
@@ -940,7 +933,7 @@ webhookRouter.post(
     try {
       event = stripe.webhooks.constructEvent(req.body, sig, env.stripeWebhookSecret);
     } catch (err) {
-      console.error("Webhook signature verification failed:", err.message);
+      console.log("Webhook signature verification failed:", err.message);
       res.status(400).json({ error: "Invalid signature" });
       return;
     }
@@ -1038,7 +1031,7 @@ webhookRouter.post(
                 await recordDiscountUsage(sub.metadata.discountCode, user._id);
               }
             } catch (err) {
-              console.error("Failed to retrieve subscription from invoice.paid:", err.message);
+              console.log("Failed to retrieve subscription from invoice.paid:", err.message);
             }
           }
 
@@ -1078,7 +1071,7 @@ webhookRouter.post(
                 console.log(`User ${user.email} downgraded to free — invoice payment failed`);
               }
             } catch (err) {
-              console.error("Failed to retrieve subscription from invoice.payment_failed:", err.message);
+              console.log("Failed to retrieve subscription from invoice.payment_failed:", err.message);
             }
           }
 
@@ -1188,7 +1181,7 @@ webhookRouter.post(
         }
       }
     } catch (err) {
-      console.error(`Error handling webhook event ${event.type}:`, err.message || err);
+      console.log(`Error handling webhook event ${event.type}:`, err.message || err);
       processingError = err;
     }
 
@@ -1243,7 +1236,7 @@ validateDiscountCodeRouter.post("/validate", authMiddleware, async (req, res) =>
       message: `Discount $${dc.discountAmount} off applied to annual plan`,
     });
   } catch (error) {
-    console.error("Discount code validation error:", error.message);
+    console.log("Discount code validation error:", error.message);
     res.status(500).json({ error: "Failed to validate discount code" });
   }
 });

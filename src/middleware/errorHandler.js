@@ -1,7 +1,7 @@
 const multer = require("multer");
 
 function errorHandler(err, req, res, _next) {
-  console.error("Unhandled error:", err && (err.stack || err));
+  console.log("Unhandled error:", err && (err.stack || err));
 
   if (err instanceof multer.MulterError) {
     let message = err.message;
