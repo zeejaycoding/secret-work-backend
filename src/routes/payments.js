@@ -469,6 +469,102 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
 
 // ── Subscription status (read-only) ──
 checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
+
+// ── Confirm subscription payment (called after Google Pay / Card succeeds) ──
+checkoutRouter.post("/confirm-subscription", authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.auth.userId);
+    if (!user || !user.stripeSubscriptionId) {
+      return res.json({ ok: false, error: "No active subscription found" });
+    }
+
+    const sub = await stripe.subscriptions.retrieve(user.stripeSubscriptionId);
+    console.log(`[confirm-sub] sub ${sub.id} status: ${sub.status}`);
+
+    // Already active — just ensure DB is synced
+    if (["active", "trialing"].includes(sub.status)) {
+      if (user.subscriptionTier !== "pro") {
+        user.subscriptionTier = "pro";
+        if (sub.current_period_end) {
+          user.subscriptionExpiry = new Date(sub.current_period_end * 1000);
+        }
+        await user.save();
+      }
+      return res.json({ ok: true, alreadyActive: true });
+    }
+
+    const invoiceId = typeof sub.latest_invoice === "string"
+      ? sub.latest_invoice
+      : sub.latest_invoice?.id;
+
+    if (!invoiceId) {
+      console.log(`[confirm-sub] no invoice for sub ${sub.id}`);
+      return res.json({ ok: false, error: "No invoice found" });
+    }
+
+    // Find the most recent payment method on the customer
+    const pmList = await stripe.paymentMethods.list({
+      customer: user.stripeCustomerId,
+      type: "card",
+      limit: 1,
+    });
+
+    if (!pmList.data.length) {
+      console.log(`[confirm-sub] no payment methods for customer ${user.stripeCustomerId}`);
+      return res.json({ ok: false, error: "No payment method found" });
+    }
+
+    const pmId = pmList.data[0].id;
+
+    // Pay the invoice with the saved payment method
+    try {
+      await stripe.invoices.pay(invoiceId, { payment_method: pmId });
+      console.log(`[confirm-sub] paid invoice ${invoiceId}`);
+    } catch (payErr) {
+      console.log(`[confirm-sub] invoices.pay failed: ${payErr.message}`);
+      // Even if pay fails, try to retrieve refreshed subscription
+    }
+
+    // Refresh subscription status after payment attempt
+    const refreshed = await stripe.subscriptions.retrieve(sub.id);
+    const isNowActive = ["active", "trialing"].includes(refreshed.status);
+
+    if (isNowActive && user.subscriptionTier !== "pro") {
+      user.subscriptionTier = "pro";
+      if (refreshed.current_period_end) {
+        user.subscriptionExpiry = new Date(refreshed.current_period_end * 1000);
+      }
+      user.billingInterval = getInterval(refreshed);
+      const item = refreshed.items?.data?.[0];
+      const priceAmount = item?.price?.unit_amount || item?.plan?.amount;
+      if (priceAmount != null) user.subscriptionAmount = priceAmount / 100;
+      await user.save();
+      console.log(`[confirm-sub] ${user.email} upgraded to pro`);
+
+      // Create transaction for admin panel
+      await upsertTransaction({
+        invoiceId: invoiceId,
+        chargeId: "",
+        subscriptionId: sub.id,
+        userId: user._id,
+        userEmail: user.email,
+        userName: `${user.firstName || ""} ${user.lastName || ""}`.trim(),
+        plan: getInterval(refreshed) || "",
+        amount: priceAmount != null ? priceAmount / 100 : 0,
+        status: "success",
+        date: new Date(),
+      });
+    }
+
+    res.json({ ok: true, isActive: isNowActive, status: refreshed.status });
+  } catch (error) {
+    console.log("[confirm-sub] error:", error.message || error);
+    res.status(500).json({ ok: false, error: error.message || "Confirmation failed" });
+  }
+});
+
+// ── Subscription status (read-only) ──
+checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
   let user;
   try {
     user = await User.findById(req.auth.userId).lean();
@@ -815,28 +911,59 @@ webhookRouter.post(
           const subId = setupIntent.metadata?.subscriptionId;
           const userId = setupIntent.metadata?.userId;
 
+          console.log(`SetupIntent succeeded: ${setupIntent.id}, sub: ${subId}, user: ${userId}`);
+
           if (subId) {
             try {
               const sub = await stripe.subscriptions.retrieve(subId);
-              if (sub.status === "incomplete" && sub.latest_invoice) {
-                // Attach the payment method to the customer then pay the invoice
-                const invoiceId = typeof sub.latest_invoice === "string"
-                  ? sub.latest_invoice
-                  : sub.latest_invoice.id;
-                const invoice = await stripe.invoices.retrieve(invoiceId);
+              console.log(`SetupIntent: subscription status = ${sub.status}`);
 
-                if (setupIntent.payment_method) {
-                  const pmId = typeof setupIntent.payment_method === "string"
-                    ? setupIntent.payment_method
-                    : setupIntent.payment_method.id;
-                  await stripe.invoices.pay(invoiceId, {
-                    payment_method: pmId,
-                  });
+              const invoiceId = typeof sub.latest_invoice === "string"
+                ? sub.latest_invoice
+                : sub.latest_invoice?.id;
+
+              if (invoiceId && setupIntent.payment_method) {
+                const pmId = typeof setupIntent.payment_method === "string"
+                  ? setupIntent.payment_method
+                  : setupIntent.payment_method.id;
+
+                // Pay the invoice with the saved payment method
+                try {
+                  await stripe.invoices.pay(invoiceId, { payment_method: pmId });
                   console.log(`SetupIntent: paid invoice ${invoiceId} for sub ${subId}`);
+                } catch (payErr) {
+                  console.log(`SetupIntent: invoices.pay failed: ${payErr.message}. Retrying...`);
+                  // Retry once after a short delay
+                  await new Promise(r => setTimeout(r, 3000));
+                  try {
+                    await stripe.invoices.pay(invoiceId, { payment_method: pmId });
+                    console.log(`SetupIntent: retry paid invoice ${invoiceId}`);
+                  } catch (retryErr) {
+                    console.log(`SetupIntent: retry also failed: ${retryErr.message}`);
+                  }
+                }
+
+                // Self-heal: regardless of invoice pay result, sync the subscription status
+                const refreshedSub = await stripe.subscriptions.retrieve(subId);
+                if (["active", "trialing"].includes(refreshedSub.status) && userId) {
+                  const user = await User.findById(userId);
+                  if (user && user.subscriptionTier !== "pro") {
+                    user.subscriptionTier = "pro";
+                    user.stripeSubscriptionId = subId;
+                    if (refreshedSub.current_period_end) {
+                      user.subscriptionExpiry = new Date(refreshedSub.current_period_end * 1000);
+                    }
+                    const item = refreshedSub.items?.data?.[0];
+                    const priceAmount = item?.price?.unit_amount || item?.plan?.amount;
+                    if (priceAmount != null) user.subscriptionAmount = priceAmount / 100;
+                    user.billingInterval = getInterval(refreshedSub);
+                    await user.save();
+                    console.log(`SetupIntent: self-healed ${user.email} to pro`);
+                  }
                 }
               }
             } catch (e) {
-              console.log(`SetupIntent: failed to pay invoice for sub ${subId}: ${e.message}`);
+              console.log(`SetupIntent: error handling sub ${subId}: ${e.message}`);
             }
           }
           break;
