@@ -414,42 +414,92 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
       return;
     }
 
-    // ── Subscription incomplete — need PaymentIntent client secret for PaymentSheet ──
-    let clientSecret =
-      subscription.latest_invoice?.payment_intent?.client_secret || null;
+    // ── Get PaymentIntent client secret for PaymentSheet ──
+    // Try multiple strategies since expand can be unreliable
+    let clientSecret = null;
 
-    // Fallback: if expand didn't populate the PI, retrieve the invoice directly
+    // Strategy 1: From expanded subscription response
+    clientSecret = subscription.latest_invoice?.payment_intent?.client_secret || null;
+    if (clientSecret) {
+      console.log(`Subscription: got PI from expanded response`);
+    }
+
+    // Strategy 2: Retrieve invoice directly with expand
     if (!clientSecret && subscription.latest_invoice?.id) {
       try {
-        const invoice = await stripe.invoices.retrieve(
-          subscription.latest_invoice.id,
-          { expand: ["payment_intent"] }
-        );
-        clientSecret = invoice.payment_intent?.client_secret || null;
-        console.log(`Subscription: fallback invoice retrieve got PI: ${!!clientSecret}`);
+        const inv = await stripe.invoices.retrieve(subscription.latest_invoice.id, {
+          expand: ["payment_intent"],
+        });
+        clientSecret = inv.payment_intent?.client_secret || null;
+        if (clientSecret) console.log(`Subscription: got PI from invoice retrieve`);
       } catch (e) {
-        console.log(`Subscription: fallback invoice retrieve failed: ${e.message}`);
+        console.log(`Subscription: invoice retrieve failed: ${e.message}`);
       }
     }
 
-    // Second fallback: list invoices for the subscription
+    // Strategy 3: List invoices for subscription
     if (!clientSecret) {
       try {
-        const invoices = await stripe.invoices.list({
-          subscription: subscription.id,
-          limit: 1,
-        });
-        if (invoices.data.length > 0) {
-          const inv = invoices.data[0];
+        const invList = await stripe.invoices.list({ subscription: subscription.id, limit: 5 });
+        for (const inv of invList.data) {
           if (inv.payment_intent) {
             const piId = typeof inv.payment_intent === "string" ? inv.payment_intent : inv.payment_intent.id;
             const pi = await stripe.paymentIntents.retrieve(piId);
-            clientSecret = pi.client_secret;
-            console.log(`Subscription: second fallback via PI retrieve got clientSecret: ${!!clientSecret}`);
+            if (pi?.client_secret) {
+              clientSecret = pi.client_secret;
+              console.log(`Subscription: got PI from invoices.list`);
+              break;
+            }
           }
         }
       } catch (e) {
-        console.log(`Subscription: second fallback failed: ${e.message}`);
+        console.log(`Subscription: invoices.list failed: ${e.message}`);
+      }
+    }
+
+    // Strategy 4: If invoice exists but has no PI, finalize it then retrieve
+    if (!clientSecret && subscription.latest_invoice?.id) {
+      try {
+        const inv = await stripe.invoices.finalizeInvoice(subscription.latest_invoice.id);
+        console.log(`Subscription: finalized invoice ${inv.id}, status=${inv.status}`);
+        const invAfter = await stripe.invoices.retrieve(inv.id, { expand: ["payment_intent"] });
+        clientSecret = invAfter.payment_intent?.client_secret || null;
+        if (clientSecret) console.log(`Subscription: got PI after finalizing invoice`);
+      } catch (e) {
+        console.log(`Subscription: finalize invoice failed: ${e.message}`);
+      }
+    }
+
+    // Strategy 5: Wait briefly and retry invoice retrieve (Stripe sometimes needs a moment)
+    if (!clientSecret) {
+      try {
+        await new Promise((r) => setTimeout(r, 2000));
+        const invList = await stripe.invoices.list({ subscription: subscription.id, limit: 5 });
+        for (const inv of invList.data) {
+          if (inv.payment_intent) {
+            const piId = typeof inv.payment_intent === "string" ? inv.payment_intent : inv.payment_intent.id;
+            const pi = await stripe.paymentIntents.retrieve(piId);
+            if (pi?.client_secret) {
+              clientSecret = pi.client_secret;
+              console.log(`Subscription: got PI after delay retry`);
+              break;
+            }
+          }
+          // Try finalizing draft invoices
+          if (inv.status === "draft") {
+            try {
+              const finalized = await stripe.invoices.finalizeInvoice(inv.id);
+              const refreshed = await stripe.invoices.retrieve(finalized.id, { expand: ["payment_intent"] });
+              if (refreshed.payment_intent?.client_secret) {
+                clientSecret = refreshed.payment_intent.client_secret;
+                console.log(`Subscription: got PI after finalizing draft invoice`);
+                break;
+              }
+            } catch {}
+          }
+        }
+      } catch (e) {
+        console.log(`Subscription: delay retry failed: ${e.message}`);
       }
     }
 
@@ -460,8 +510,18 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
         alreadyPaid: false,
       });
     } else {
-      console.log(`Subscription: ${subscription.id} no PI client secret. Status: ${subscription.status}, latest_invoice: ${subscription.latest_invoice?.id}, payment_intent: ${JSON.stringify(subscription.latest_invoice?.payment_intent)}`);
-      res.status(500).json({ error: "Payment initialization failed. The subscription was created but payment details could not be loaded. Please try again." });
+      console.log(`Subscription: ALL strategies failed for ${subscription.id}. Status: ${subscription.status}`);
+      // Cancel orphaned subscription ONLY if still incomplete (webhook may have paid it)
+      try {
+        const recheck = await stripe.subscriptions.retrieve(subscription.id);
+        if (recheck.status === "incomplete") {
+          await stripe.subscriptions.cancel(subscription.id);
+          console.log(`Subscription: cancelled orphan ${subscription.id}`);
+        } else {
+          console.log(`Subscription: skip cancel — status now ${recheck.status}`);
+        }
+      } catch {}
+      res.status(500).json({ error: "Payment initialization failed. Please try again." });
     }
   } catch (error) {
     console.log("Create subscription error:", error.message || error);
