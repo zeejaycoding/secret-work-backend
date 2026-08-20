@@ -368,14 +368,15 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
       }
     }
 
-    // ── Create subscription — default_incomplete so first invoice + PI are created ──
+    // ── Create subscription — default_incomplete so first invoice is created ──
     const priceId = await getOrCreatePrice(plan, discount.unitAmount);
 
     const subscription = await stripe.subscriptions.create({
       customer: customerId,
       items: [{ price: priceId }],
       payment_behavior: "default_incomplete",
-      expand: ["latest_invoice.payment_intent"],
+      payment_settings: { save_default_payment_method: "on_subscription" },
+      expand: ["latest_invoice.confirmation_secret", "pending_setup_intent"],
       metadata: {
         userId: user._id.toString(),
         plan,
@@ -414,26 +415,21 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
       return;
     }
 
-    // ── Subscription incomplete — return the first invoice's PaymentIntent ──
-    // PaymentSheet will collect payment on this PI. Once paid, invoice.paid webhook
-    // is the authoritative source for granting Pro access.
-    const invoice = subscription.latest_invoice;
-    const pi = invoice?.payment_intent;
+    // ── Subscription incomplete — return the client secret for PaymentSheet ──
+    // Basil API: use confirmation_secret instead of payment_intent
+    // https://docs.stripe.com/payments/accept-a-payment-deferred?platform=web&type=subscription
+    const clientSecret =
+      subscription.pending_setup_intent?.client_secret ||
+      subscription.latest_invoice?.confirmation_secret?.client_secret;
 
-    if (pi?.status === "requires_payment_method" && pi?.client_secret) {
+    if (clientSecret) {
       res.json({
         subscriptionId: subscription.id,
-        clientSecret: pi.client_secret,
-        alreadyPaid: false,
-      });
-    } else if (pi?.status === "requires_action" && pi?.client_secret) {
-      res.json({
-        subscriptionId: subscription.id,
-        clientSecret: pi.client_secret,
+        clientSecret,
         alreadyPaid: false,
       });
     } else {
-      console.log(`Subscription: ${subscription.id} invoice PI status: ${pi?.status || "unknown"}, polling will catch it`);
+      console.log(`Subscription: ${subscription.id} missing client secret, polling will catch it`);
       res.json({ subscriptionId: subscription.id, alreadyPaid: false });
     }
   } catch (error) {
