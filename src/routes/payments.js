@@ -13,15 +13,14 @@ const { upsertTransaction } = require("../services/transactions");
 const stripe = new Stripe(env.stripeSecretKey);
 
 const PLAN_PRICES = {
-  monthly: { amount: 950, interval: "month", label: "Monthly Pro" },
-  annually: { amount: 7900, interval: "year", label: "Annual Pro" },
+  monthly: { amount: 599, interval: "month", label: "Monthly Pro" },
+  annual: { amount: 6000, interval: "year", label: "Annual Pro" },
 };
 
 const MINIMUM_CHARGE_CENTS = 50;
 
 async function getPlanConfig(key) {
-  const planKey = key === "annually" ? "annual" : "monthly";
-  const doc = await Plan.findOne({ key: planKey });
+  const doc = await Plan.findOne({ key });
   if (doc && doc.price && Number(doc.price.amount) > 0) {
     return {
       amount: Math.round(Number(doc.price.amount) * 100),
@@ -33,7 +32,7 @@ async function getPlanConfig(key) {
 }
 
 function toBillingInterval(value) {
-  if (value === "year" || value === "annually") return "annual";
+  if (value === "year" || value === "annual") return "annual";
   if (value === "month" || value === "monthly") return "monthly";
   return undefined;
 }
@@ -133,7 +132,7 @@ async function getOrCreatePrice(planKey, unitAmount) {
 // Validate discount code and compute final amount.
 // Enforces minimum charge so price never drops below MINIMUM_CHARGE_CENTS.
 async function validateAndApplyDiscount(plan, unitAmount, discountCode) {
-  if (!discountCode || plan !== "annually") {
+  if (!discountCode || plan !== "annual") {
     return { valid: true, unitAmount, discountAmount: 0, code: null };
   }
 
@@ -229,7 +228,7 @@ checkoutRouter.post("/checkout", authMiddleware, async (req, res) => {
     const { plan, discountCode } = req.body;
 
     if (!plan || !PLAN_PRICES[plan]) {
-      res.status(400).json({ error: "Invalid plan. Choose 'monthly' or 'annually'" });
+      res.status(400).json({ error: "Invalid plan. Choose 'monthly' or 'annual'" });
       return;
     }
 
@@ -278,9 +277,21 @@ checkoutRouter.post("/checkout", authMiddleware, async (req, res) => {
   }
 });
 
-// ── SetupIntent (PaymentSheet / Apple Pay) ──
-checkoutRouter.post("/setup-intent", authMiddleware, async (req, res) => {
+// ── Create Subscription → returns the first invoice's PaymentIntent for PaymentSheet ──
+// Flow:  POST /subscription  →  Stripe creates sub + first invoice  →  returns invoice PI
+//        Client opens PaymentSheet with PI  →  user pays  →  invoice.paid webhook → Pro
+//
+// This is Stripe's recommended architecture: one charge via the invoice's own PaymentIntent.
+// No SetupIntent, no separate payment-intent endpoint, no double-charge risk.
+checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
   try {
+    const { plan, discountCode } = req.body;
+
+    if (!plan || !PLAN_PRICES[plan]) {
+      res.status(400).json({ error: "Invalid plan. Choose 'monthly' or 'annual'" });
+      return;
+    }
+
     const user = await User.findById(req.auth.userId);
     if (!user) {
       res.status(404).json({ error: "User not found" });
@@ -289,75 +300,6 @@ checkoutRouter.post("/setup-intent", authMiddleware, async (req, res) => {
 
     const customerId = await getOrCreateCustomer(user);
 
-    const setupIntent = await stripe.setupIntents.create({
-      customer: customerId,
-      payment_method_types: ["card"],
-    });
-
-    res.json({
-      clientSecret: setupIntent.client_secret,
-      setupIntentId: setupIntent.id,
-      customerId,
-    });
-  } catch (error) {
-    console.log("Setup intent error:", error.message || error);
-    res.status(500).json({ error: "Failed to create setup intent" });
-  }
-});
-
-// ── Create Subscription (after SetupIntent confirmation via PaymentSheet) ──
-// Accepts setupIntentId so we retrieve the exact payment_method instead of guessing.
-// Uses payment_behavior: "default_incomplete" + expanded invoice PI so we can detect
-// and return requires_action to the client when 3DS or other auth is needed.
-checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
-  try {
-    const { plan, discountCode, setupIntentId } = req.body;
-
-    if (!plan || !PLAN_PRICES[plan]) {
-      res.status(400).json({ error: "Invalid plan. Choose 'monthly' or 'annually'" });
-      return;
-    }
-
-    if (!setupIntentId) {
-      res.status(400).json({ error: "setupIntentId is required" });
-      return;
-    }
-
-    const user = await User.findById(req.auth.userId);
-    if (!user) {
-      res.status(404).json({ error: "User not found" });
-      return;
-    }
-
-    if (!user.stripeCustomerId) {
-      res.status(400).json({ error: "No payment method on file" });
-      return;
-    }
-
-    let setupIntent;
-    try {
-      setupIntent = await stripe.setupIntents.retrieve(setupIntentId);
-    } catch {
-      res.status(400).json({ error: "Invalid or expired setup intent" });
-      return;
-    }
-
-    if (setupIntent.customer !== user.stripeCustomerId) {
-      res.status(403).json({ error: "Setup intent does not belong to this customer" });
-      return;
-    }
-
-    if (setupIntent.status !== "succeeded") {
-      res.status(400).json({ error: "Setup intent has not been confirmed" });
-      return;
-    }
-
-    const paymentMethodId = setupIntent.payment_method;
-    if (!paymentMethodId) {
-      res.status(400).json({ error: "No payment method attached to setup intent" });
-      return;
-    }
-
     const selectedPlan = await getPlanConfig(plan);
     const discount = await validateAndApplyDiscount(plan, selectedPlan.amount, discountCode);
     if (!discount.valid) {
@@ -365,41 +307,73 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
       return;
     }
 
-    await cancelAbandonedSubscriptions(user.stripeCustomerId);
-
+    // ── Check for existing active/trialing subscription ──
     const existingSubsAll = await stripe.subscriptions.list({
-      customer: user.stripeCustomerId,
+      customer: customerId,
       status: "all",
       limit: 100,
     });
-    const pendingSub = existingSubsAll.data.find(
+
+    const activeSub = existingSubsAll.data.find(
       (sub) =>
-        ["active", "trialing", "incomplete", "past_due"].includes(sub.status) &&
+        ["active", "trialing"].includes(sub.status) &&
         sub.metadata?.source === "secret_work_app"
     );
-    if (pendingSub) {
-      if (pendingSub.status === "active" || pendingSub.status === "trialing") {
-        if (user.subscriptionTier !== "pro") {
-          user.subscriptionTier = "pro";
-          user.stripeSubscriptionId = pendingSub.id;
-          if (pendingSub.current_period_end) {
-            user.subscriptionExpiry = new Date(pendingSub.current_period_end * 1000);
-          }
-          await user.save();
-          console.log(`Subscription: self-healed ${user.email} to pro`);
+
+    if (activeSub) {
+      if (user.subscriptionTier !== "pro") {
+        user.subscriptionTier = "pro";
+        user.stripeSubscriptionId = activeSub.id;
+        if (activeSub.current_period_end) {
+          user.subscriptionExpiry = new Date(activeSub.current_period_end * 1000);
         }
-        return res.json({ subscriptionId: pendingSub.id, alreadyPaid: true });
+        await user.save();
+        console.log(`Subscription: self-healed ${user.email} to pro`);
       }
-      // Incomplete sub exists — don't create another
-      return res.json({ subscriptionId: pendingSub.id, alreadyPaid: false });
+      const hasTx = await Transaction.findOne({ stripeSubscriptionId: activeSub.id, status: "success" }).lean();
+      if (!hasTx) {
+        const item = activeSub.items?.data?.[0];
+        const subAmount = (item?.price?.unit_amount || 0) / 100;
+        await upsertTransaction({
+          invoiceId: "",
+          chargeId: "",
+          subscriptionId: activeSub.id,
+          userId: user._id,
+          userEmail: user.email,
+          userName: `${user.firstName || ""} ${user.lastName || ""}`.trim(),
+          plan: plan,
+          amount: subAmount,
+          status: "success",
+          date: new Date(),
+        });
+      }
+      return res.json({ subscriptionId: activeSub.id, alreadyPaid: true });
     }
 
+    // ── Cancel incomplete subscriptions — user may have changed payment method ──
+    await cancelAbandonedSubscriptions(customerId);
+
+    const incompleteSubs = existingSubsAll.data.filter(
+      (sub) =>
+        ["incomplete", "incomplete_expired"].includes(sub.status) &&
+        sub.metadata?.source === "secret_work_app"
+    );
+
+    for (const sub of incompleteSubs) {
+      try {
+        await stripe.subscriptions.cancel(sub.id);
+        console.log(`Subscription: cancelled incomplete sub ${sub.id} for ${user.email}`);
+      } catch (e) {
+        console.log(`Subscription: failed to cancel incomplete sub ${sub.id}:`, e.message);
+      }
+    }
+
+    // ── Create subscription — default_incomplete so first invoice + PI are created ──
     const priceId = await getOrCreatePrice(plan, discount.unitAmount);
 
     const subscription = await stripe.subscriptions.create({
-      customer: user.stripeCustomerId,
+      customer: customerId,
       items: [{ price: priceId }],
-      default_payment_method: paymentMethodId,
       payment_behavior: "default_incomplete",
       expand: ["latest_invoice.payment_intent"],
       metadata: {
@@ -410,53 +384,11 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
       },
     });
 
-    // Always save the subscription ID so GET /subscription can find it during polling.
     user.stripeSubscriptionId = subscription.id;
     await user.save();
     console.log(`Subscription: created ${subscription.id} for ${user.email} (status: ${subscription.status})`);
 
-    let invoice = subscription.latest_invoice;
-    let pi = invoice?.payment_intent;
-
-    // Basil API: check invoice.payments for the PI
-    if (!pi?.client_secret && invoice?.payments?.data?.length) {
-      const ip = invoice.payments.data.find(
-        (p) => p.payment?.type === "payment_intent" && p.payment?.payment_intent
-      );
-      if (ip) {
-        const piId = typeof ip.payment.payment_intent === "string"
-          ? ip.payment.payment_intent
-          : ip.payment.payment_intent?.id;
-        if (piId) {
-          try { pi = await stripe.paymentIntents.retrieve(piId); } catch {}
-        }
-      }
-    }
-
-    // If expansion didn't work, manually retrieve the invoice
-    if (!pi?.client_secret && invoice) {
-      const invoiceId = typeof invoice === "string" ? invoice : invoice.id;
-      console.warn("Subscription: invoice missing PI, retrieving manually:", invoiceId);
-      try {
-        const retrievedInvoice = await stripe.invoices.retrieve(invoiceId, {
-          expand: ["payments.data.payment_intent"],
-        });
-        invoice = retrievedInvoice;
-        const ip = retrievedInvoice.payments?.data?.find(
-          (p) => p.payment?.type === "payment_intent" && p.payment?.payment_intent
-        );
-        if (ip) {
-          const piId = typeof ip.payment.payment_intent === "string"
-            ? ip.payment.payment_intent
-            : ip.payment.payment_intent?.id;
-          if (piId) pi = await stripe.paymentIntents.retrieve(piId);
-        }
-      } catch (e) {
-        console.log("Subscription: failed to retrieve invoice manually:", e.message);
-      }
-    }
-
-    // If subscription was created as active/trialing, we're done.
+    // If subscription was created as active/trialing (e.g. free trial), grant immediately.
     if (["active", "trialing"].includes(subscription.status)) {
       if (user.subscriptionTier !== "pro") {
         user.subscriptionTier = "pro";
@@ -464,92 +396,49 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
           user.subscriptionExpiry = new Date(subscription.current_period_end * 1000);
         }
         await user.save();
-        console.log(`Subscription: self-healed ${user.email} to pro (created ${subscription.status})`);
+        console.log(`Subscription: ${user.email} activated immediately (${subscription.status})`);
       }
+      await upsertTransaction({
+        invoiceId: subscription.latest_invoice?.id || "",
+        chargeId: "",
+        subscriptionId: subscription.id,
+        userId: user._id,
+        userEmail: user.email,
+        userName: `${user.firstName || ""} ${user.lastName || ""}`.trim(),
+        plan: plan,
+        amount: discount.unitAmount / 100,
+        status: "success",
+        date: new Date(),
+      });
       res.json({ subscriptionId: subscription.id, alreadyPaid: true });
       return;
     }
 
-    // Subscription is incomplete — try to force-pay the invoice.
-    // With default_payment_method set, Stripe should auto-charge, but basil API
-    // sometimes needs an explicit trigger. invoices.pay() is safe to call even
-    // if the payment is already in progress.
-    const invoiceId = typeof invoice === "string" ? invoice : invoice?.id;
-    if (invoiceId) {
-      try {
-        const paidInvoice = await stripe.invoices.pay(invoiceId, {
-          payment_intent: pi?.id,
-        });
-        console.log(`Subscription: invoice ${invoiceId} pay result: ${paidInvoice.status}`);
+    // ── Subscription incomplete — return the first invoice's PaymentIntent ──
+    // PaymentSheet will collect payment on this PI. Once paid, invoice.paid webhook
+    // is the authoritative source for granting Pro access.
+    const invoice = subscription.latest_invoice;
+    const pi = invoice?.payment_intent;
 
-        // If invoice paid, refresh subscription status
-        if (paidInvoice.status === "paid") {
-          const refreshed = await stripe.subscriptions.retrieve(subscription.id);
-          if (["active", "trialing"].includes(refreshed.status)) {
-            user.subscriptionTier = "pro";
-            if (refreshed.current_period_end) {
-              user.subscriptionExpiry = new Date(refreshed.current_period_end * 1000);
-            }
-            await user.save();
-            console.log(`Subscription: ${user.email} activated after invoices.pay`);
-            res.json({ subscriptionId: subscription.id, alreadyPaid: true });
-            return;
-          }
-        }
-      } catch (e) {
-        console.log("Subscription: invoices.pay failed:", e.message);
-      }
-    }
-
-    // Re-retrieve the PI after invoices.pay attempt to get fresh status
-    if (pi?.id) {
-      try { pi = await stripe.paymentIntents.retrieve(pi.id); } catch {}
-    }
-
-    if (pi?.status === "requires_action" && pi?.client_secret) {
+    if (pi?.status === "requires_payment_method" && pi?.client_secret) {
       res.json({
         subscriptionId: subscription.id,
-        requiresAction: true,
         clientSecret: pi.client_secret,
+        alreadyPaid: false,
       });
-    } else if (pi?.status === "requires_payment_method") {
-      res.status(402).json({ error: "Payment method was declined. Please try a different card." });
+    } else if (pi?.status === "requires_action" && pi?.client_secret) {
+      res.json({
+        subscriptionId: subscription.id,
+        clientSecret: pi.client_secret,
+        alreadyPaid: false,
+      });
     } else {
-      // Still incomplete — polling or webhook will handle it
-      console.log(`Subscription: ${subscription.id} still incomplete (PI status: ${pi?.status || "unknown"}), polling will catch it`);
+      console.log(`Subscription: ${subscription.id} invoice PI status: ${pi?.status || "unknown"}, polling will catch it`);
       res.json({ subscriptionId: subscription.id, alreadyPaid: false });
     }
   } catch (error) {
     console.log("Create subscription error:", error.message || error);
     res.status(500).json({ error: error.message || "Failed to create subscription" });
-  }
-});
-
-// ── Google Pay — returns a SetupIntent for the client to confirm with Google Pay.
-// After confirmation, the frontend calls POST /subscription with the setupIntentId
-// (same flow as the card/PaymentSheet path).
-checkoutRouter.post("/google-pay-intent", authMiddleware, async (req, res) => {
-  try {
-    const user = await User.findById(req.auth.userId);
-    if (!user) {
-      res.status(404).json({ error: "User not found" });
-      return;
-    }
-
-    const customerId = await getOrCreateCustomer(user);
-
-    const setupIntent = await stripe.setupIntents.create({
-      customer: customerId,
-      payment_method_types: ["card"],
-    });
-
-    res.json({
-      clientSecret: setupIntent.client_secret,
-      setupIntentId: setupIntent.id,
-    });
-  } catch (error) {
-    console.log("Google Pay intent error:", error.message || error);
-    res.status(500).json({ error: error.message || "Failed to create Google Pay intent" });
   }
 });
 
@@ -607,6 +496,26 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
           : undefined,
       });
       console.log("[sub-status] self-healed", user.email, "to pro");
+      // Backfill missing Transaction so admin dashboard shows revenue
+      const hasTx = await Transaction.findOne({ stripeSubscriptionId: subscription.id, status: "success" }).lean();
+      if (!hasTx) {
+        const subAmount = subscription.items?.data?.[0]?.price?.unit_amount != null
+          ? subscription.items.data[0].price.unit_amount / 100
+          : 0;
+        await upsertTransaction({
+          invoiceId: "",
+          chargeId: "",
+          subscriptionId: subscription.id,
+          userId: user._id,
+          userEmail: user.email,
+          userName: `${user.firstName || ""} ${user.lastName || ""}`.trim(),
+          plan: getInterval(subscription) || "",
+          amount: subAmount,
+          status: "success",
+          date: new Date(),
+        });
+        console.log("[sub-status] backfilled transaction for", user.email);
+      }
     } catch (e) {
       console.log("[sub-status] self-heal save failed:", e.message);
     }
@@ -740,6 +649,16 @@ webhookRouter.post(
             : null;
           const interval = await resolveInvoiceInterval(invoice);
 
+          // Basil API removed invoice.payment_intent — extract charge ID from payments array
+          let chargeId = invoice.payment_intent || "";
+          if (!chargeId && invoice.payments?.data?.length) {
+            const lastPayment = invoice.payments.data[invoice.payments.data.length - 1];
+            const piRef = lastPayment?.payment?.payment_intent;
+            if (piRef) {
+              chargeId = typeof piRef === "string" ? piRef : piRef.id || "";
+            }
+          }
+
           // Grant Pro access on successful payment — this is the single
           // authoritative point for access grants after initial checkout.
           if (user && invoice.subscription) {
@@ -781,7 +700,7 @@ webhookRouter.post(
 
           await upsertTransaction({
             invoiceId: invoice.id,
-            chargeId: invoice.payment_intent || "",
+            chargeId: chargeId,
             subscriptionId: invoice.subscription || "",
             userId: user?._id,
             userEmail: user?.email || invoice.customer_email || "",
@@ -805,6 +724,16 @@ webhookRouter.post(
             : null;
           const interval = await resolveInvoiceInterval(invoice);
 
+          // Basil API: extract charge ID from payments array
+          let failedChargeId = invoice.payment_intent || "";
+          if (!failedChargeId && invoice.payments?.data?.length) {
+            const lastPayment = invoice.payments.data[invoice.payments.data.length - 1];
+            const piRef = lastPayment?.payment?.payment_intent;
+            if (piRef) {
+              failedChargeId = typeof piRef === "string" ? piRef : piRef.id || "";
+            }
+          }
+
           // Downgrade access on failed payment.
           if (user && invoice.subscription) {
             try {
@@ -821,7 +750,7 @@ webhookRouter.post(
 
           await upsertTransaction({
             invoiceId: invoice.id,
-            chargeId: invoice.payment_intent || "",
+            chargeId: failedChargeId,
             subscriptionId: invoice.subscription || "",
             userId: user?._id,
             userEmail: user?.email || invoice.customer_email || "",
@@ -948,7 +877,7 @@ validateDiscountCodeRouter.post("/validate", authMiddleware, async (req, res) =>
       return res.status(400).json({ error: "Code and plan are required" });
     }
 
-    if (plan !== "annually") {
+    if (plan !== "annual") {
       return res.status(400).json({ valid: false, message: "Discount code only applies to annual plan" });
     }
 

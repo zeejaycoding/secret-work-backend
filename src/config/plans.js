@@ -12,7 +12,7 @@ const DEFAULT_PLANS = {
   monthly: {
     key: "monthly",
     label: "Monthly Pro",
-    price: { amount: 9.5, interval: "month" },
+    price: { amount: 5.99, interval: "month" },
     benefits: [
       { text: "Unlimited Access to All Drills", enabled: true },
       { text: "Structured Workouts That Actually Improve You", enabled: true },
@@ -24,7 +24,7 @@ const DEFAULT_PLANS = {
   annual: {
     key: "annual",
     label: "Annual Pro",
-    price: { amount: 79, interval: "year" },
+    price: { amount: 60, interval: "year" },
     benefits: [
       { text: "Unlimited Access to All Drills", enabled: true },
       { text: "Structured Workouts That Actually Improve You", enabled: true },

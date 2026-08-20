@@ -5,7 +5,7 @@ const { env } = require("../src/config/env");
 const { User } = require("../src/models/User");
 
 function toBillingInterval(value) {
-  if (value === "year" || value === "annually") return "annual";
+  if (value === "year" || value === "annual") return "annual";
   if (value === "month" || value === "monthly") return "monthly";
   return undefined;
 }
