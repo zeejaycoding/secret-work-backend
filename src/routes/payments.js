@@ -375,9 +375,6 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
       customer: customerId,
       items: [{ price: priceId }],
       payment_behavior: "default_incomplete",
-      payment_settings: {
-        save_default_payment_method: "on_subscription",
-      },
       expand: ["latest_invoice.payment_intent"],
       metadata: {
         userId: user._id.toString(),
@@ -418,8 +415,43 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
     }
 
     // ── Subscription incomplete — need PaymentIntent client secret for PaymentSheet ──
-    const clientSecret =
+    let clientSecret =
       subscription.latest_invoice?.payment_intent?.client_secret || null;
+
+    // Fallback: if expand didn't populate the PI, retrieve the invoice directly
+    if (!clientSecret && subscription.latest_invoice?.id) {
+      try {
+        const invoice = await stripe.invoices.retrieve(
+          subscription.latest_invoice.id,
+          { expand: ["payment_intent"] }
+        );
+        clientSecret = invoice.payment_intent?.client_secret || null;
+        console.log(`Subscription: fallback invoice retrieve got PI: ${!!clientSecret}`);
+      } catch (e) {
+        console.log(`Subscription: fallback invoice retrieve failed: ${e.message}`);
+      }
+    }
+
+    // Second fallback: list invoices for the subscription
+    if (!clientSecret) {
+      try {
+        const invoices = await stripe.invoices.list({
+          subscription: subscription.id,
+          limit: 1,
+        });
+        if (invoices.data.length > 0) {
+          const inv = invoices.data[0];
+          if (inv.payment_intent) {
+            const piId = typeof inv.payment_intent === "string" ? inv.payment_intent : inv.payment_intent.id;
+            const pi = await stripe.paymentIntents.retrieve(piId);
+            clientSecret = pi.client_secret;
+            console.log(`Subscription: second fallback via PI retrieve got clientSecret: ${!!clientSecret}`);
+          }
+        }
+      } catch (e) {
+        console.log(`Subscription: second fallback failed: ${e.message}`);
+      }
+    }
 
     if (clientSecret) {
       res.json({
@@ -429,7 +461,7 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
       });
     } else {
       console.log(`Subscription: ${subscription.id} no PI client secret. Status: ${subscription.status}, latest_invoice: ${subscription.latest_invoice?.id}, payment_intent: ${JSON.stringify(subscription.latest_invoice?.payment_intent)}`);
-      res.json({ subscriptionId: subscription.id, alreadyPaid: false });
+      res.status(500).json({ error: "Payment initialization failed. The subscription was created but payment details could not be loaded. Please try again." });
     }
   } catch (error) {
     console.log("Create subscription error:", error.message || error);
