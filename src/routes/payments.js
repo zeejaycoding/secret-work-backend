@@ -369,6 +369,7 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
     }
 
     // ── Create subscription — default_incomplete so first invoice is created ──
+    // billing_mode flexible required for confirmation_secret (Basil 2025-06-30+)
     const priceId = await getOrCreatePrice(plan, discount.unitAmount);
 
     const subscription = await stripe.subscriptions.create({
@@ -376,6 +377,7 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
       items: [{ price: priceId }],
       payment_behavior: "default_incomplete",
       payment_settings: { save_default_payment_method: "on_subscription" },
+      billing_mode: { type: "flexible" },
       expand: ["latest_invoice.confirmation_secret", "pending_setup_intent"],
       metadata: {
         userId: user._id.toString(),
@@ -415,21 +417,80 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
       return;
     }
 
-    // ── Subscription incomplete — return the client secret for PaymentSheet ──
+    // ── Subscription incomplete — need client secret for PaymentSheet ──
     // Basil API: use confirmation_secret instead of payment_intent
-    // https://docs.stripe.com/payments/accept-a-payment-deferred?platform=web&type=subscription
-    const clientSecret =
-      subscription.pending_setup_intent?.client_secret ||
-      subscription.latest_invoice?.confirmation_secret?.client_secret;
+    // https://docs.stripe.com/billing/subscriptions/build-subscriptions?payment-ui=mobile&platform=react-native
+    let clientSecret = null;
+
+    // Path 1: pending_setup_intent (free trial / no immediate payment)
+    if (subscription.pending_setup_intent?.client_secret) {
+      clientSecret = subscription.pending_setup_intent.client_secret;
+    }
+
+    // Path 2: confirmation_secret from latest invoice (normal card payment)
+    if (!clientSecret && subscription.latest_invoice?.confirmation_secret?.client_secret) {
+      clientSecret = subscription.latest_invoice.confirmation_secret.client_secret;
+    }
+
+    // Path 3: Fallback — retrieve invoice separately with payments expansion
+    if (!clientSecret && subscription.latest_invoice?.id) {
+      console.log(`Subscription: ${subscription.id} confirmation_secret empty, trying invoice.payments fallback`);
+      try {
+        const invoice = await stripe.invoices.retrieve(subscription.latest_invoice.id, {
+          expand: ["payments.payment_intent"],
+        });
+        // Basil: invoice.payments is a list of payment records, each with a payment_intent
+        if (invoice.payments?.data?.length > 0) {
+          for (const payment of invoice.payments.data) {
+            if (payment.payment_intent?.client_secret) {
+              clientSecret = payment.payment_intent.client_secret;
+              break;
+            }
+          }
+        }
+      } catch (e) {
+        console.log(`Subscription: invoice fallback failed for ${subscription.id}:`, e.message);
+      }
+    }
+
+    // Path 4: Final fallback — expand latest_invoice fully then re-check confirmation_secret
+    if (!clientSecret && subscription.latest_invoice?.id) {
+      console.log(`Subscription: ${subscription.id} trying final fallback — retrieve sub with full expansion`);
+      try {
+        const refreshed = await stripe.subscriptions.retrieve(subscription.id, {
+          expand: ["latest_invoice.confirmation_secret"],
+        });
+        clientSecret = refreshed.latest_invoice?.confirmation_secret?.client_secret || null;
+        if (clientSecret) {
+          console.log(`Subscription: ${subscription.id} got client secret from refreshed subscription`);
+        }
+      } catch (e) {
+        console.log(`Subscription: final fallback failed for ${subscription.id}:`, e.message);
+      }
+    }
+
+    // Create ephemeral key for PaymentSheet
+    let ephemeralKeySecret = null;
+    try {
+      const ephemeralKey = await stripe.ephemeralKeys.create(
+        { customer: customerId },
+        { apiVersion: "2026-03-25.dahlia" }
+      );
+      ephemeralKeySecret = ephemeralKey.secret;
+    } catch (e) {
+      console.log(`Subscription: ephemeral key failed for ${user.email}:`, e.message);
+    }
 
     if (clientSecret) {
       res.json({
         subscriptionId: subscription.id,
         clientSecret,
+        ephemeralKey: ephemeralKeySecret,
+        customerId,
         alreadyPaid: false,
       });
     } else {
-      console.log(`Subscription: ${subscription.id} missing client secret, polling will catch it`);
+      console.log(`Subscription: ${subscription.id} could not obtain client secret after all fallbacks. Status: ${subscription.status}, latest_invoice: ${subscription.latest_invoice?.id}, confirmation_secret: ${JSON.stringify(subscription.latest_invoice?.confirmation_secret)}`);
       res.json({ subscriptionId: subscription.id, alreadyPaid: false });
     }
   } catch (error) {
