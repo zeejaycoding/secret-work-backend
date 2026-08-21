@@ -7,6 +7,7 @@ async function authMiddleware(req, res, next) {
     const authHeader = req.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      console.log("[auth] missing/invalid auth header on", req.method, req.originalUrl);
       res.status(401).json({ error: "Missing or invalid authorization header" });
       return;
     }
@@ -38,9 +39,11 @@ async function authMiddleware(req, res, next) {
     next();
   } catch (error) {
     if (error.name === "TokenExpiredError") {
+      console.log("[auth] token expired on", req.method, req.originalUrl);
       res.status(401).json({ error: "Token expired" });
       return;
     }
+    console.log("[auth] invalid token on", req.method, req.originalUrl, error.message);
     res.status(401).json({ error: "Invalid or expired token" });
   }
 }

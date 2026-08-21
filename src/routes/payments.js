@@ -792,6 +792,7 @@ webhookRouter.post(
   "/stripe",
   express.raw({ type: "application/json" }),
   async (req, res) => {
+    console.log("[webhook] hit /api/webhooks/stripe");
     const sig = req.headers["stripe-signature"];
 
     if (!env.stripeWebhookSecret) {
