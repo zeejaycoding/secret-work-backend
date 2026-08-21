@@ -488,7 +488,7 @@ checkoutRouter.post("/confirm-subscription", authMiddleware, async (req, res) =>
         if (sub.current_period_end) {
           user.subscriptionExpiry = new Date(sub.current_period_end * 1000);
         }
-        user.billingInterval = getInterval(sub);
+        user.billingInterval = toBillingInterval(getInterval(sub));
         const item = sub.items?.data?.[0];
         const priceAmount = item?.price?.unit_amount || item?.plan?.amount;
         if (priceAmount != null) user.subscriptionAmount = priceAmount / 100;
@@ -545,7 +545,7 @@ checkoutRouter.post("/confirm-subscription", authMiddleware, async (req, res) =>
         if (sub.current_period_end) {
           user.subscriptionExpiry = new Date(sub.current_period_end * 1000);
         }
-        user.billingInterval = getInterval(sub);
+        user.billingInterval = toBillingInterval(getInterval(sub));
         const item = sub.items?.data?.[0];
         const priceAmount = item?.price?.unit_amount || item?.plan?.amount;
         if (priceAmount != null) user.subscriptionAmount = priceAmount / 100;
@@ -628,7 +628,7 @@ checkoutRouter.post("/confirm-subscription", authMiddleware, async (req, res) =>
       if (refreshed.current_period_end) {
         user.subscriptionExpiry = new Date(refreshed.current_period_end * 1000);
       }
-      user.billingInterval = getInterval(refreshed);
+      user.billingInterval = toBillingInterval(getInterval(refreshed));
       const item = refreshed.items?.data?.[0];
       const priceAmount = item?.price?.unit_amount || item?.plan?.amount;
       if (priceAmount != null) user.subscriptionAmount = priceAmount / 100;
@@ -705,7 +705,7 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
       await User.findByIdAndUpdate(user._id, {
         subscriptionTier: "pro",
         stripeSubscriptionId: subscription.id,
-        billingInterval: getInterval(subscription),
+        billingInterval: toBillingInterval(getInterval(subscription)),
         subscriptionExpiry: subscription.current_period_end
           ? new Date(subscription.current_period_end * 1000)
           : undefined,
@@ -1032,7 +1032,7 @@ webhookRouter.post(
                     if (sub.current_period_end) {
                       user.subscriptionExpiry = new Date(sub.current_period_end * 1000);
                     }
-                    user.billingInterval = getInterval(sub);
+                    user.billingInterval = toBillingInterval(getInterval(sub));
                     const item = sub.items?.data?.[0];
                     const priceAmount = item?.price?.unit_amount || item?.plan?.amount;
                     if (priceAmount != null) user.subscriptionAmount = priceAmount / 100;
@@ -1108,7 +1108,7 @@ webhookRouter.post(
                     const item = refreshedSub.items?.data?.[0];
                     const priceAmount = item?.price?.unit_amount || item?.plan?.amount;
                     if (priceAmount != null) user.subscriptionAmount = priceAmount / 100;
-                    user.billingInterval = getInterval(refreshedSub);
+                    user.billingInterval = toBillingInterval(getInterval(refreshedSub));
                     await user.save();
                     console.log(`SetupIntent: self-healed ${user.email} to pro`);
                   }
