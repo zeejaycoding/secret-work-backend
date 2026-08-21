@@ -502,21 +502,25 @@ checkoutRouter.post("/confirm-subscription", authMiddleware, async (req, res) =>
         ? await Transaction.findOne({ stripeInvoiceId: invoiceIdStr }).lean()
         : null;
       if (!hasTx && invoiceIdStr) {
-        const item = sub.items?.data?.[0];
-        const priceAmount = item?.price?.unit_amount || item?.plan?.amount;
-        await upsertTransaction({
-          invoiceId: invoiceIdStr,
-          chargeId: "",
-          subscriptionId: sub.id,
-          userId: user._id,
-          userEmail: user.email,
-          userName: `${user.firstName || ""} ${user.lastName || ""}`.trim(),
-          plan: toBillingInterval(getInterval(sub)) || "",
-          amount: priceAmount != null ? priceAmount / 100 : 0,
-          status: "success",
-          date: new Date(),
-        });
-        console.log(`[confirm-sub] backfilled transaction for ${user.email}`);
+        try {
+          const item = sub.items?.data?.[0];
+          const priceAmount = item?.price?.unit_amount || item?.plan?.amount;
+          await upsertTransaction({
+            invoiceId: invoiceIdStr,
+            chargeId: "",
+            subscriptionId: sub.id,
+            userId: user._id,
+            userEmail: user.email,
+            userName: `${user.firstName || ""} ${user.lastName || ""}`.trim(),
+            plan: toBillingInterval(getInterval(sub)) || "",
+            amount: priceAmount != null ? priceAmount / 100 : 0,
+            status: "success",
+            date: new Date(),
+          });
+          console.log(`[confirm-sub] backfilled transaction for ${user.email}`);
+        } catch (txErr) {
+          console.error("[confirm-sub] backfill upsertTransaction failed:", txErr.message);
+        }
       }
       return res.json({ ok: true, alreadyActive: true });
     }
@@ -928,23 +932,27 @@ webhookRouter.post(
             }
           }
 
-          await upsertTransaction({
-            invoiceId: invoice.id,
-            chargeId: chargeId,
-            subscriptionId: invoice.subscription || "",
-            userId: user?._id,
-            userEmail: user?.email || invoice.customer_email || "",
-            userName: user
-              ? `${user.firstName || ""} ${user.lastName || ""}`.trim()
-              : "",
-            plan: toBillingInterval(interval) || "",
-            amount: (invoice.amount_paid || 0) / 100,
-            status: "success",
-            paymentMethod: paymentMethodType,
-            date: new Date(
-              (invoice.status_transitions?.paid_at || invoice.created) * 1000
-            ),
-          });
+          try {
+            await upsertTransaction({
+              invoiceId: invoice.id,
+              chargeId: chargeId,
+              subscriptionId: invoice.subscription || "",
+              userId: user?._id,
+              userEmail: user?.email || invoice.customer_email || "",
+              userName: user
+                ? `${user.firstName || ""} ${user.lastName || ""}`.trim()
+                : "",
+              plan: toBillingInterval(interval) || "",
+              amount: (invoice.amount_paid || 0) / 100,
+              status: "success",
+              paymentMethod: paymentMethodType,
+              date: new Date(
+                (invoice.status_transitions?.paid_at || invoice.created) * 1000
+              ),
+            });
+          } catch (txErr) {
+            console.error("[invoice.paid] upsertTransaction failed:", txErr.message);
+          }
           break;
         }
 

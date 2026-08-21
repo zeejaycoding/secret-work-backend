@@ -74,9 +74,21 @@ async function upsertTransaction(payload) {
     });
   } catch (error) {
     if (error.code === 11000) {
-      if (invoiceId) return await Transaction.findOne({ stripeInvoiceId: invoiceId });
+      // Duplicate key — try to fetch the existing record
+      if (invoiceId) {
+        const existing = await Transaction.findOne({ stripeInvoiceId: invoiceId });
+        if (existing) return existing;
+      }
+      // Fallback: if the duplicate was on stripeChargeId and we have a chargeId
+      if (chargeId) {
+        const existing = await Transaction.findOne({ stripeChargeId: chargeId });
+        if (existing) return existing;
+      }
+      console.error("[upsertTransaction] 11000 dedup fallback failed, invoice:", invoiceId, "charge:", chargeId);
+      return null;
     }
-    throw error;
+    console.error("[upsertTransaction] failed:", error.message, "invoice:", invoiceId, "charge:", chargeId);
+    return null;
   }
 }
 
