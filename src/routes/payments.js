@@ -638,7 +638,10 @@ checkoutRouter.post("/confirm-subscription", authMiddleware, async (req, res) =>
 
     // Always create transaction if we paid (dedup by invoice ID)
     if (paid) {
-      console.log(`[confirm-sub] paid=true, creating transaction for invoice ${invoiceId}, amount: ${invoice.amount_paid}`);
+      // Re-retrieve invoice to get actual amount_paid after payment
+      const paidInvoice = await stripe.invoices.retrieve(invoiceId);
+      const txAmount = (paidInvoice.amount_paid || 0) / 100 || (refreshed.items?.data?.[0]?.price?.unit_amount || 0) / 100;
+      console.log(`[confirm-sub] paid=true, creating transaction for invoice ${invoiceId}, amount: ${txAmount}`);
       await upsertTransaction({
         invoiceId: invoiceId,
         chargeId: "",
@@ -647,7 +650,7 @@ checkoutRouter.post("/confirm-subscription", authMiddleware, async (req, res) =>
         userEmail: user.email,
         userName: `${user.firstName || ""} ${user.lastName || ""}`.trim(),
         plan: toBillingInterval(getInterval(refreshed)) || "",
-        amount: (invoice.amount_paid || 0) / 100,
+        amount: txAmount,
         status: "success",
         date: new Date(),
       });
