@@ -13,6 +13,8 @@ async function upsertTransaction(payload) {
     paymentMethod,
   } = payload;
 
+  console.log("[upsertTransaction] called:", JSON.stringify({ invoiceId, chargeId, subscriptionId, status, amount, paymentMethod, plan: payload.plan, userId: payload.userId }));
+
   let tx = null;
   if (invoiceId) tx = await Transaction.findOne({ stripeInvoiceId: invoiceId });
   if (!tx && chargeId)
@@ -25,6 +27,7 @@ async function upsertTransaction(payload) {
   }
 
   if (tx) {
+    console.log("[upsertTransaction] found existing tx:", tx._id, "status:", tx.status);
     const current = STATUS_PRIORITY[tx.status] || 1;
     const next = STATUS_PRIORITY[status] || 1;
     let changed = false;
@@ -58,7 +61,7 @@ async function upsertTransaction(payload) {
   }
 
   try {
-    return await Transaction.create({
+    const doc = await Transaction.create({
       userId: payload.userId || null,
       userEmail: payload.userEmail || "",
       userName: payload.userName || "",
@@ -72,22 +75,22 @@ async function upsertTransaction(payload) {
       paymentMethod: paymentMethod || "",
       date: payload.date || new Date(),
     });
+    console.log("[upsertTransaction] CREATED tx:", doc._id, "invoice:", invoiceId);
+    return doc;
   } catch (error) {
+    console.error("[upsertTransaction] CREATE FAILED:", error.message, "code:", error.code, "invoice:", invoiceId, "charge:", chargeId);
     if (error.code === 11000) {
-      // Duplicate key — try to fetch the existing record
       if (invoiceId) {
         const existing = await Transaction.findOne({ stripeInvoiceId: invoiceId });
         if (existing) return existing;
       }
-      // Fallback: if the duplicate was on stripeChargeId and we have a chargeId
       if (chargeId) {
         const existing = await Transaction.findOne({ stripeChargeId: chargeId });
         if (existing) return existing;
       }
-      console.error("[upsertTransaction] 11000 dedup fallback failed, invoice:", invoiceId, "charge:", chargeId);
+      console.error("[upsertTransaction] 11000 dedup fallback failed");
       return null;
     }
-    console.error("[upsertTransaction] failed:", error.message, "invoice:", invoiceId, "charge:", chargeId);
     return null;
   }
 }

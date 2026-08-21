@@ -638,6 +638,7 @@ checkoutRouter.post("/confirm-subscription", authMiddleware, async (req, res) =>
 
     // Always create transaction if we paid (dedup by invoice ID)
     if (paid) {
+      console.log(`[confirm-sub] paid=true, creating transaction for invoice ${invoiceId}, amount: ${invoice.amount_paid}`);
       await upsertTransaction({
         invoiceId: invoiceId,
         chargeId: "",
@@ -861,6 +862,7 @@ webhookRouter.post(
 
         case "invoice.paid": {
           const invoice = event.data.object;
+          console.log(`[invoice.paid] received: ${invoice.id}, status: ${invoice.status}, amount_paid: ${invoice.amount_paid}, customer: ${invoice.customer}`);
           const user = invoice.customer
             ? await User.findOne({ stripeCustomerId: invoice.customer })
             : null;
