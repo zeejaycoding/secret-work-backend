@@ -20,9 +20,8 @@ async function sendPasswordResetEmail({ toEmail, otpCode }) {
   ensureEmailConfigured();
 
   const fromName = env.emailFromName || "Secret Work";
-  const fromEmail = String(
-    env.transactionalEmailFrom || env.emailFrom || "noreply@secretwork.app"
-  ).trim();
+  const fromEmail = String(env.emailFrom || "noreply@secretwork.app").trim();
+  const replyEmail = String(env.replyToEmail || env.emailFrom || fromEmail).trim();
 
   const msg = {
     to: toEmail,
@@ -158,7 +157,10 @@ async function sendPasswordResetEmail({ toEmail, otpCode }) {
 </html>`,
     categories: ["password-reset"],
     headers: {
+      "List-Unsubscribe": `<mailto:${replyEmail}?subject=unsubscribe>`,
+      "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
       "X-Mailer": "SecretWork",
+      "List-ID": "Secret Work <secretwork>",
     },
   };
 
