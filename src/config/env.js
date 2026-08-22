@@ -14,6 +14,11 @@ const env = {
   emailPass: process.env.EMAIL_PASS || "",
   sendgridApiKey: process.env.SENDGRID_API_KEY || process.env.GRID_API_KEY || "",
   emailFrom: process.env.EMAIL_FROM || process.env.EMAIL_USER || "noreply@secretwork.app",
+  transactionalEmailFrom:
+    process.env.TRANSACTIONAL_EMAIL_FROM ||
+    process.env.PASSWORD_RESET_FROM ||
+    process.env.EMAIL_FROM ||
+    "noreply@secretwork.app",
   emailFromName: process.env.EMAIL_FROM_NAME || "Secret Work",
   replyToEmail: process.env.REPLY_TO_EMAIL || process.env.EMAIL_FROM || process.env.EMAIL_USER || "support@secretwork.app",
   stripeSecretKey: process.env.STRIPE_SECRET_KEY || "",
