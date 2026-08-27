@@ -17,6 +17,8 @@ function toVideoShape(drill) {
     reps: "5 Reps",
     image: drill.imageUrl || "",
     videoUrl: drill.videoUrl || "",
+    views: drill.views || 0,
+    likes: drill.likes || 0,
   };
 }
 
