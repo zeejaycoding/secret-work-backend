@@ -4,7 +4,6 @@ const { DEFAULT_PLANS } = require("../config/plans");
 
 const router = Router();
 
-// ── Plans: Public List (used by the app to render pricing/benefits live) ──
 router.get("/", async (req, res) => {
   try {
     const docs = await Plan.find().sort({ key: 1 });

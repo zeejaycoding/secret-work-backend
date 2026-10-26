@@ -8,9 +8,17 @@ const Drill = require("../models/Drill");
 const Program = require("../models/Program");
 const Follow = require("../models/Follow");
 const UserNotification = require("../models/UserNotification");
+const Activity = require("../models/Activity");
+const Like = require("../models/Like");
+const Transaction = require("../models/Transaction");
+const DiscountCode = require("../models/DiscountCode");
+const { ChatMessage } = require("../models/ChatMessage");
+const Stripe = require("stripe");
+const { env } = require("../config/env");
 const { recordActivity } = require("../services/activity");
 
 const router = Router();
+const stripe = env.stripeSecretKey ? new Stripe(env.stripeSecretKey) : null;
 
 // ── Pros: Public List ──
 router.get("/pros", async (req, res) => {
@@ -293,7 +301,6 @@ router.post("/progress/watch", async (req, res) => {
       return res.status(400).json({ error: "seconds is required and must be positive" });
     }
 
-    // Guard against absurd batches (max 2 hours per report)
     const clamped = Math.min(Math.round(seconds), 7200);
 
     const user = await User.findByIdAndUpdate(
@@ -362,12 +369,45 @@ router.post("/programs/enroll", async (req, res) => {
 
 router.delete("/me", async (req, res) => {
   try {
-    const user = await User.findByIdAndDelete(req.auth.userId);
+    const user = await User.findById(req.auth.userId);
 
     if (!user) {
       res.status(404).json({ error: "User not found" });
       return;
     }
+
+    if (user.stripeSubscriptionId && !stripe) {
+      res.status(503).json({ error: "Payment service is not configured" });
+      return;
+    }
+
+    if (user.stripeSubscriptionId) {
+      try {
+        await stripe.subscriptions.cancel(user.stripeSubscriptionId);
+      } catch (error) {
+        console.error("Cancel subscription during account deletion error:", error);
+        res.status(502).json({
+          error: "Could not cancel your subscription. Your account was not deleted.",
+        });
+        return;
+      }
+    }
+
+    const userId = user._id;
+    await Promise.all([
+      Follow.deleteMany({ user: userId }),
+      Like.deleteMany({ user: userId }),
+      Activity.deleteMany({ userId }),
+      UserNotification.deleteMany({ userId }),
+      ChatMessage.deleteMany({ $or: [{ from: userId }, { to: userId }] }),
+      Transaction.deleteMany({ userId }),
+      DiscountCode.updateMany({ usedBy: userId }, { $pull: { usedBy: userId } }),
+    ]);
+
+    if (user.avatarUrl) {
+      deleteCloudinaryFile(user.avatarUrl);
+    }
+    await User.deleteOne({ _id: userId });
 
     console.log(`User deleted: ${user.email}`);
     res.json({ success: true });

@@ -14,7 +14,6 @@ function adminAuth(req, res, next) {
     if (!decoded || !decoded.role) {
       return res.status(401).json({ error: "Invalid admin token" });
     }
-    // Attach permissions (either from token or default role mapping)
     if (!decoded.permissions) {
       decoded.permissions = (DEFAULT_ROLES[decoded.role] && DEFAULT_ROLES[decoded.role].permissions) || {};
     }

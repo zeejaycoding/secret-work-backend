@@ -54,7 +54,6 @@ function createOtpCode() {
   return crypto.randomInt(10000, 100000).toString();
 }
 
-// Drills visible in a program = all of its drills minus admin-removed ones (and dangling refs)
 function visibleProgramDrills(program) {
   const removed = new Set(
     (program.removedDrills || []).map((r) => String(r._id || r))
@@ -64,7 +63,6 @@ function visibleProgramDrills(program) {
     .sort((a, b) => (a.order || 0) - (b.order || 0));
 }
 
-// Normalize a category so case/whitespace/spelling variants match (Defense == Defence)
 function normalizeCategory(value) {
   return String(value || "")
     .trim()
@@ -105,7 +103,6 @@ async function runTranscription(podcast) {
   await podcast.save();
 }
 
-// Add every drill in the DB to a program, skipping ones an admin explicitly removed
 async function backfillProgramDrills(program) {
   const allDrills = await Drill.find({}).sort({ createdAt: 1 });
   const removedSet = new Set(
@@ -155,7 +152,7 @@ router.post("/login", async (req, res) => {
   }
 });
 
-// ── Admin Forgot Password (just validates the fixed credentials) ──
+// ── Admin Forgot Password ──
 router.post("/forgot-password", async (req, res) => {
   try {
     const { email } = req.body;
@@ -192,8 +189,6 @@ router.post("/reset-password", async (req, res) => {
 // ── Admin Forgot Password Reset (no current password required) ──
 router.post("/forgot-password-reset", async (req, res) => {
   try {
-    // Disabled: public forgot-password-reset is a security risk.
-    // Require the authenticated admin reset flow instead via /reset-password.
     return res.status(403).json({ error: "Endpoint disabled. Use authenticated reset." });
   } catch (error) {
     console.error("Forgot password reset error:", error);
@@ -905,7 +900,6 @@ router.get("/roles/:key", adminAuth, async (req, res) => {
       ...(doc?.permissions || {}),
     };
 
-    // Assigned users: users whose role matches, or whose assignedRoles list includes this role
     const users = await User.find({
       $or: [{ role: key }, { assignedRoles: key }],
     })
@@ -1107,7 +1101,6 @@ router.post("/drills", adminAuth, requirePermission("upload_content"), upload.fi
     if (req.files?.thumbnail?.[0]) {
       const p = req.files.thumbnail[0].path || req.files.thumbnail[0].url || req.files.thumbnail[0].secure_url;
       if (typeof p === "string" && (p.includes("/uploads/") || p.includes("\\uploads\\"))) {
-        // convert absolute path to server-relative URL
         const idx = p.indexOf("/uploads/") >= 0 ? p.indexOf("/uploads/") : p.indexOf("\\uploads\\");
         const rel = idx >= 0 ? p.slice(idx).replace(/\\\\/g, "/") : p;
         data.imageUrl = rel;
@@ -1375,7 +1368,6 @@ router.get("/coaches/:name", adminAuth, async (req, res) => {
       coach: { $regex: new RegExp(`^${escapeRegex(name)}$`, "i") },
     });
 
-    // Match a coach user account (role = "coach") so we can surface a real avatar if one exists
     const stripped = name.replace(/^coach\s+/i, "");
     const nameParts = stripped.split(/\s+/).filter(Boolean);
     let user = null;
@@ -1560,12 +1552,9 @@ router.get("/programs", adminAuth, async (req, res) => {
     let programs = await Program.find(filter)
       .populate("drills.drill")
       .sort({ createdAt: -1 });
-    // Ensure every program lists ALL drills in the DB, unless a drill was specifically
-    // removed by an admin for that program.
     for (const p of programs) {
       await backfillProgramDrills(p);
     }
-    // Refetch with populated drills after backfill
     programs = await Program.find(filter)
       .populate("drills.drill")
       .sort({ createdAt: -1 });
@@ -1589,13 +1578,11 @@ router.get("/programs/:id", adminAuth, async (req, res) => {
     await backfillProgramDrills(program);
     program = await Program.findById(req.params.id).populate("drills.drill");
 
-    // Real enrolled users (from the app's enrolledPrograms field)
     const enrolledUsers = await User.find({ enrolledPrograms: program._id })
       .select("firstName lastName email")
       .sort({ createdAt: -1 })
       .limit(30);
 
-    // Real per-drill completion counts from users' completedDrills
     const drillIds = (program.drills || [])
       .filter((d) => d.drill)
       .map((d) => String(d.drill._id || d.drill));
@@ -1949,8 +1936,6 @@ router.post("/podcasts/:id/transcribe", adminAuth, async (req, res) => {
         .json({ error: "Podcast has no media file to transcribe" });
     }
 
-    // Return immediately with a pending status; transcription runs in the
-    // background and the panel polls until it finishes.
     podcast.transcriptStatus = "pending";
     podcast.transcript = [];
     await podcast.save();
@@ -2109,12 +2094,9 @@ router.post("/notifications", adminAuth, requirePermission("send_notifications")
           .json({ error: "scheduledAt is required for scheduled notifications" });
       }
       let when;
-      // Detect naive datetime-local input "YYYY-MM-DDTHH:mm" (no timezone)
       if (typeof scheduledAt === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(scheduledAt)) {
-        // Prefer client-provided timezone offset in minutes (header: X-Client-Timezone-Offset)
         const hdr = req.get("X-Client-Timezone-Offset") || req.get("x-client-timezone-offset");
         const offsetMin = hdr ? parseInt(hdr, 10) : NaN;
-        // Parse components in a timezone-agnostic way
         const m = scheduledAt.match(/(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
         if (!m) {
           return res.status(400).json({ error: "Invalid scheduledAt" });
@@ -2124,8 +2106,6 @@ router.post("/notifications", adminAuth, requirePermission("send_notifications")
         const d = parseInt(m[3], 10);
         const hh = parseInt(m[4], 10);
         const mm = parseInt(m[5], 10);
-        // Create UTC ms for the local components, then adjust by client's offset
-        // UTC ms = Date.UTC(y, mo-1, d, hh, mm) - (offsetMin * 60000)
         const utcMillis = Date.UTC(y, mo - 1, d, hh, mm) - (isNaN(offsetMin) ? 0 : offsetMin * 60000);
         when = new Date(utcMillis);
       } else {

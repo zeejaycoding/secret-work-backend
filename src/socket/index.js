@@ -86,9 +86,6 @@ function initSocket(httpServer) {
           createdAt: msg.createdAt,
         });
 
-        // Only send the bot acknowledgement once, on the user's very first
-        // query. Later queries go straight to the support queue instead of
-        // repeating the "thanks for reaching out" message.
         const userMessageCount = await ChatMessage.countDocuments({
           room,
           isAgent: false,

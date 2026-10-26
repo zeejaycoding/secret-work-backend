@@ -26,7 +26,6 @@ function escapeRegExp(str) {
   return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// ── Workouts: Public Sections — real published drills grouped by their coach ──
 router.get("/", async (req, res) => {
   try {
     const drills = await Drill.find({ status: "published" }).sort({
@@ -62,7 +61,6 @@ router.get("/", async (req, res) => {
   }
 });
 
-// ── Workouts: Quick builder (level + categories → up to 5 drills) ──
 router.get("/quick", async (req, res) => {
   try {
     const { level, categories, coach } = req.query;
@@ -135,7 +133,6 @@ router.get("/quick", async (req, res) => {
   }
 });
 
-// ── Workouts: Coach with the highest followers (for the Quick Workout card) ──
 router.get("/top-coach", async (req, res) => {
   try {
     const followCounts = await Follow.aggregate([
@@ -198,7 +195,6 @@ router.get("/top-coach", async (req, res) => {
   }
 });
 
-// ── Workouts: Coach Profile Detail (real published drills for that pro/coach) ──
 router.get("/:id", async (req, res) => {
   try {
     const idOrName = String(req.params.id || "").trim();
@@ -219,7 +215,6 @@ router.get("/:id", async (req, res) => {
     }
 
     if (!pro) {
-      // Legacy: id is a plain coach name — return drills whose coach field matches
       const legacyDrills = await Drill.find({
         status: "published",
         coach: idOrName,

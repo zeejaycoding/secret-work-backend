@@ -52,8 +52,6 @@ function getInvoiceInterval(invoice) {
   return line?.plan?.interval || line?.price?.recurring?.interval || null;
 }
 
-// getInterval returns "month"/"year" — Transaction.plan enum requires "monthly"/"annual"
-// NOTE: toBillingInterval() already handles this conversion. Use it for plan fields.
 
 async function resolveInvoiceInterval(invoice) {
   const fromLine = getInvoiceInterval(invoice);
@@ -92,7 +90,6 @@ async function getOrCreateCustomer(user) {
   return customer.id;
 }
 
-// Reuse Stripe Products/Prices by plan key instead of creating per customer.
 async function getOrCreatePrice(planKey, unitAmount) {
   const planConfig = await getPlanConfig(planKey);
   const interval = planConfig.interval;
@@ -132,8 +129,6 @@ async function getOrCreatePrice(planKey, unitAmount) {
   return price.id;
 }
 
-// Validate discount code and compute final amount.
-// Enforces minimum charge so price never drops below MINIMUM_CHARGE_CENTS.
 async function validateAndApplyDiscount(plan, unitAmount, discountCode) {
   if (!discountCode || plan !== "annual") {
     return { valid: true, unitAmount, discountAmount: 0, code: null };
@@ -167,8 +162,6 @@ async function validateAndApplyDiscount(plan, unitAmount, discountCode) {
   };
 }
 
-// Atomically record discount usage. Uses $expr to compare usedCount < usageLimit
-// within the same query so two concurrent requests can't both succeed past the limit.
 async function recordDiscountUsage(code, userId) {
   const upperCode = code.toUpperCase().trim();
 
@@ -280,12 +273,6 @@ checkoutRouter.post("/checkout", authMiddleware, async (req, res) => {
   }
 });
 
-// ── Create Subscription → returns the first invoice's PaymentIntent for PaymentSheet ──
-// Flow:  POST /subscription  →  Stripe creates sub + first invoice  →  returns invoice PI
-//        Client opens PaymentSheet with PI  →  user pays  →  invoice.paid webhook → Pro
-//
-// This is Stripe's recommended architecture: one charge via the invoice's own PaymentIntent.
-// No SetupIntent, no separate payment-intent endpoint, no double-charge risk.
 checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
   try {
     const { plan, discountCode } = req.body;
@@ -416,12 +403,8 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
       return;
     }
 
-    // ── Use SetupIntent instead of invoice PI — always reliable ──
-    // After setup completes, the payment method attaches to the customer
-    // and we manually pay the open invoice via the webhook or here.
     let clientSecret = null;
 
-    // First: try invoice PI directly (fast path if it works)
     const invoiceId = subscription.latest_invoice;
     if (invoiceId) {
       try {
@@ -435,7 +418,6 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
       }
     }
 
-    // Fallback: create a SetupIntent — guaranteed to always work
     if (!clientSecret) {
       const setupIntent = await stripe.setupIntents.create({
         customer: customerId,
@@ -470,7 +452,6 @@ checkoutRouter.post("/subscription", authMiddleware, async (req, res) => {
   }
 });
 
-// ── Confirm subscription payment (called after Google Pay / Card succeeds) ──
 checkoutRouter.post("/confirm-subscription", authMiddleware, async (req, res) => {
   try {
     const user = await User.findById(req.auth.userId);
@@ -481,7 +462,6 @@ checkoutRouter.post("/confirm-subscription", authMiddleware, async (req, res) =>
     const sub = await stripe.subscriptions.retrieve(user.stripeSubscriptionId);
     console.log(`[confirm-sub] sub ${sub.id} status: ${sub.status}`);
 
-    // Already active — just ensure DB is synced
     if (["active", "trialing"].includes(sub.status)) {
       if (user.subscriptionTier !== "pro") {
         user.subscriptionTier = "pro";
@@ -535,11 +515,9 @@ checkoutRouter.post("/confirm-subscription", authMiddleware, async (req, res) =>
       return res.json({ ok: false, error: "No invoice found" });
     }
 
-    // Check if invoice is already paid (webhook may have handled it)
     const invoice = await stripe.invoices.retrieve(invoiceId);
     if (invoice.status === "paid") {
       console.log(`[confirm-sub] invoice ${invoiceId} already paid`);
-      // Webhook already paid it — sync DB
       if (user.subscriptionTier !== "pro") {
         user.subscriptionTier = "pro";
         if (sub.current_period_end) {
@@ -551,7 +529,6 @@ checkoutRouter.post("/confirm-subscription", authMiddleware, async (req, res) =>
         if (priceAmount != null) user.subscriptionAmount = priceAmount / 100;
         await user.save();
       }
-      // Always backfill transaction if missing
       const hasTx = await Transaction.findOne({ stripeInvoiceId: invoiceId }).lean();
       if (!hasTx) {
         await upsertTransaction({
@@ -570,14 +547,12 @@ checkoutRouter.post("/confirm-subscription", authMiddleware, async (req, res) =>
       return res.json({ ok: true, alreadyActive: true });
     }
 
-    // Find payment methods — try card first, then any type
     let pmList = await stripe.paymentMethods.list({
       customer: user.stripeCustomerId,
       type: "card",
       limit: 1,
     });
 
-    // Also check for Google Pay / Apple Pay tokenized cards
     if (!pmList.data.length) {
       pmList = await stripe.paymentMethods.list({
         customer: user.stripeCustomerId,
@@ -596,7 +571,6 @@ checkoutRouter.post("/confirm-subscription", authMiddleware, async (req, res) =>
     try {
       await stripe.paymentMethods.attach(pmId, { customer: user.stripeCustomerId });
     } catch (attachErr) {
-      // Already attached — that's fine
       if (!attachErr.message?.includes("already")) {
         console.log(`[confirm-sub] attach PM failed: ${attachErr.message}`);
       }
@@ -622,7 +596,6 @@ checkoutRouter.post("/confirm-subscription", authMiddleware, async (req, res) =>
     const refreshed = await stripe.subscriptions.retrieve(sub.id);
     const isNowActive = ["active", "trialing"].includes(refreshed.status);
 
-    // Sync user pro status regardless of race — upsertTransaction handles dedup
     if (isNowActive && user.subscriptionTier !== "pro") {
       user.subscriptionTier = "pro";
       if (refreshed.current_period_end) {
@@ -636,9 +609,7 @@ checkoutRouter.post("/confirm-subscription", authMiddleware, async (req, res) =>
       console.log(`[confirm-sub] ${user.email} upgraded to pro`);
     }
 
-    // Always create transaction if we paid (dedup by invoice ID)
     if (paid) {
-      // Re-retrieve invoice to get actual amount_paid after payment
       const paidInvoice = await stripe.invoices.retrieve(invoiceId);
       const txAmount = (paidInvoice.amount_paid || 0) / 100 || (refreshed.items?.data?.[0]?.price?.unit_amount || 0) / 100;
       console.log(`[confirm-sub] paid=true, creating transaction for invoice ${invoiceId}, amount: ${txAmount}`);
@@ -702,7 +673,6 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
 
   const isActive = subscription && ["active", "trialing"].includes(subscription.status);
 
-  // Self-heal: Stripe says active but DB says free → sync.
   if (isActive && user.subscriptionTier !== "pro") {
     try {
       await User.findByIdAndUpdate(user._id, {
@@ -717,7 +687,6 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
           : undefined,
       });
       console.log("[sub-status] self-healed", user.email, "to pro");
-      // Backfill missing Transaction so admin dashboard shows revenue
       const hasTx = await Transaction.findOne({ stripeSubscriptionId: subscription.id, status: "success" }).lean();
       if (!hasTx) {
         const subAmount = subscription.items?.data?.[0]?.price?.unit_amount != null
@@ -740,7 +709,6 @@ checkoutRouter.get("/subscription", authMiddleware, async (req, res) => {
     } catch (e) {
       console.log("[sub-status] self-heal save failed:", e.message);
     }
-    // Update local values for response
     user.subscriptionTier = "pro";
   }
 
@@ -782,12 +750,6 @@ checkoutRouter.post("/portal", authMiddleware, async (req, res) => {
   }
 });
 
-// ══════════════════════════════════════════════════════════════════════
-//  WEBHOOK — Sole authoritative source for payment & access state.
-//
-//  Mounted in index.js BEFORE express.json(), so req.body is the raw
-//  Buffer required for Stripe signature verification.
-// ══════════════════════════════════════════════════════════════════════
 
 const webhookRouter = Router();
 
@@ -813,15 +775,12 @@ webhookRouter.post(
       return;
     }
 
-    // Deduplicate: Stripe may deliver the same event more than once.
-    // Atomic claim — only the first request wins.
     const claimed = await StripeEvent.findOneAndUpdate(
       { eventId: event.id },
       { $setOnInsert: { eventId: event.id, type: event.type, processedAt: new Date() } },
       { upsert: true, new: true, rawResult: true }
     );
     if (!claimed.value) {
-      // Duplicate key error = another request claimed it first.
       return res.json({ received: true });
     }
 
@@ -836,8 +795,6 @@ webhookRouter.post(
           if (userId) {
             const user = await User.findById(userId);
             if (user) {
-              // Save subscription metadata only — do NOT grant Pro here.
-              // invoice.paid is the single authoritative access grant.
               user.stripeSubscriptionId = session.subscription;
               user.billingInterval = toBillingInterval(session.metadata?.plan);
               if (session.amount_total != null) {
@@ -872,7 +829,6 @@ webhookRouter.post(
             : null;
           const interval = await resolveInvoiceInterval(invoice);
 
-          // Basil API removed invoice.payment_intent — extract charge ID from payments array
           let chargeId = invoice.payment_intent || "";
           if (!chargeId && invoice.payments?.data?.length) {
             const lastPayment = invoice.payments.data[invoice.payments.data.length - 1];
@@ -882,7 +838,6 @@ webhookRouter.post(
             }
           }
 
-          // Extract payment method type from invoice charges
           let paymentMethodType = "";
           try {
             if (chargeId) {
@@ -896,11 +851,8 @@ webhookRouter.post(
               else if (acct.includes("google")) paymentMethodType = "google_pay";
             }
           } catch {
-            // Best effort — don't block payment processing
           }
 
-          // Grant Pro access on successful payment — this is the single
-          // authoritative point for access grants after initial checkout.
           if (user && invoice.subscription) {
             try {
               const sub = await stripe.subscriptions.retrieve(invoice.subscription);
@@ -917,7 +869,6 @@ webhookRouter.post(
                 await user.save();
                 console.log(`User ${user.email} upgraded to pro via invoice.paid`);
               } else if (["active", "trialing"].includes(sub.status)) {
-                // Already pro — just sync subscription metadata
                 if (sub.current_period_end) {
                   user.subscriptionExpiry = new Date(sub.current_period_end * 1000);
                 }
@@ -928,8 +879,6 @@ webhookRouter.post(
                 await user.save();
               }
 
-              // Record discount usage — protected by usedBy $ne check,
-              // so duplicate invoice.paid retries won't double-count.
               if (sub.metadata?.discountCode) {
                 await recordDiscountUsage(sub.metadata.discountCode, user._id);
               }
@@ -969,7 +918,6 @@ webhookRouter.post(
             : null;
           const interval = await resolveInvoiceInterval(invoice);
 
-          // Basil API: extract charge ID from payments array
           let failedChargeId = invoice.payment_intent || "";
           if (!failedChargeId && invoice.payments?.data?.length) {
             const lastPayment = invoice.payments.data[invoice.payments.data.length - 1];
@@ -979,7 +927,6 @@ webhookRouter.post(
             }
           }
 
-          // Downgrade access on failed payment.
           if (user && invoice.subscription) {
             try {
               const sub = await stripe.subscriptions.retrieve(invoice.subscription);
@@ -1026,7 +973,6 @@ webhookRouter.post(
 
               if (["active", "trialing"].includes(sub.status)) {
                 console.log(`SetupIntent: sub ${subId} already active, skipping invoice pay`);
-                // Already paid — just sync DB if needed
                 if (userId) {
                   const user = await User.findById(userId);
                   if (user && user.subscriptionTier !== "pro") {
@@ -1078,12 +1024,10 @@ webhookRouter.post(
                   ? setupIntent.payment_method
                   : setupIntent.payment_method.id;
 
-                // Check if invoice already paid (confirm-sub endpoint may have handled it)
                 const invoice = await stripe.invoices.retrieve(invoiceId);
                 if (invoice.status === "paid") {
                   console.log(`SetupIntent: invoice ${invoiceId} already paid`);
                 } else {
-                  // Pay the invoice with the saved payment method
                   for (let attempt = 1; attempt <= 3; attempt++) {
                     try {
                       await stripe.invoices.pay(invoiceId, { payment_method: pmId });
@@ -1098,7 +1042,6 @@ webhookRouter.post(
                   }
                 }
 
-                // Self-heal: sync subscription status
                 const refreshedSub = await stripe.subscriptions.retrieve(subId);
                 if (["active", "trialing"].includes(refreshedSub.status) && userId) {
                   const user = await User.findById(userId);
@@ -1116,7 +1059,6 @@ webhookRouter.post(
                     console.log(`SetupIntent: self-healed ${user.email} to pro`);
                   }
 
-                  // Always backfill transaction if missing (dedup by invoice ID)
                   const hasTx = invoiceId ? await Transaction.findOne({ stripeInvoiceId: invoiceId }).lean() : null;
                   if (!hasTx && invoiceId) {
                     const userDoc = userId ? await User.findById(userId) : null;
@@ -1183,8 +1125,6 @@ webhookRouter.post(
               await user.save();
               console.log(`User ${user.email} downgraded to free via subscription.updated`);
             } else {
-              // Sync metadata only — do NOT independently grant Pro.
-              // Access is granted by invoice.paid.
               user.billingInterval = toBillingInterval(getInterval(subscription));
               if (subscription.current_period_end) {
                 user.subscriptionExpiry = new Date(subscription.current_period_end * 1000);

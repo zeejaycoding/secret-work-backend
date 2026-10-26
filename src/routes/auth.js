@@ -116,7 +116,6 @@ router.post("/forgot-password", async (req, res) => {
     const normalizedEmail = email.trim().toLowerCase();
     const user = await User.findOne({ email: normalizedEmail });
 
-    // Avoid account enumeration by always returning a success response.
     if (!user) {
       res.json({
         success: true,

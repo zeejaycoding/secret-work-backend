@@ -1,7 +1,3 @@
-/**
- * Seed script — run with: node scripts/seed.js
- * Creates categories, sample drills, and programs in MongoDB
- */
 
 const mongoose = require("mongoose");
 require("dotenv").config({ path: __dirname + "/../.env" });

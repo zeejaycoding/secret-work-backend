@@ -78,8 +78,6 @@ async function transcribePodcast(mediaUrl) {
     new Blob([audioBuffer], { type: MIME_BY_EXTENSION[ext] || "application/octet-stream" }),
     `podcast-media.${ext}`
   );
-  // whisper-1 + verbose_json is the model combination that produced the
-  // per-segment timestamps we ship; it is verified working in test-whisper-tmp.js.
   formData.append("model", "whisper-1");
   formData.append("response_format", "verbose_json");
 

@@ -26,7 +26,6 @@ const { deliverCampaign } = require("./services/notifications");
 const app = express();
 const httpServer = createServer(app);
 
-// Render sits behind a reverse proxy, so trust the first proxy hop.
 app.set("trust proxy", 1);
 
 app.use(
@@ -51,11 +50,8 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-// Webhook needs raw body BEFORE express.json()
 app.use("/api/webhooks", webhookRouter);
 
-// strict:false lets primitive JSON bodies (e.g. null) reach routes instead of
-// being rejected with a 400 SyntaxError by body-parser's default strict mode.
 app.use(express.json({ strict: false }));
 
 app.use("/uploads", express.static(path.resolve(__dirname, "../uploads")));
@@ -168,7 +164,6 @@ async function start() {
     console.log(`Server running on port ${env.port} in ${env.nodeEnv} mode`);
   });
 
-  // Fire due scheduled notifications every minute.
   processScheduledNotifications();
   setInterval(processScheduledNotifications, 60 * 1000);
 }

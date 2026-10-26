@@ -144,7 +144,6 @@ async function deliverPush(campaign, users) {
   let failed = 0;
   let lastError = "";
 
-  // Expo accepts up to 100 tokens per request.
   for (let i = 0; i < payloads.length; i += 100) {
     const chunk = payloads.slice(i, i + 100);
     try {
